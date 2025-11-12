@@ -181,3 +181,145 @@ async def load_file(file_url: str, file_name: str) -> dict:
             file_name=file_name
         )
         return result
+
+
+# ==================== ASSIGNMENTS (Afleveringer) ====================
+
+async def get_all_assignments() -> dict:
+    """
+    Get all assignments from the Opgaver (Assignments) page.
+
+    Returns:
+        {
+            'count': int,
+            'assignments': [
+                {
+                    'subject': str,
+                    'title': str,
+                    'subject_budget_hours': str,
+                    'hours_spent': str,
+                    'class': str,
+                    'week': str,
+                    'deadline': str,
+                    'row_index': str
+                }
+            ]
+        }
+
+    Example:
+        assignments = await get_all_assignments()
+        print(f"Found {assignments['count']} assignments")
+    """
+    async with StudiePlusScraper() as scraper:
+        assignments = await scraper.get_homework()
+        return {
+            'count': len(assignments),
+            'assignments': assignments
+        }
+
+
+async def get_upcoming_assignments(days: int = 7) -> dict:
+    """
+    Get assignments with deadlines within the next N days.
+
+    Args:
+        days: Number of days to look ahead (default: 7)
+
+    Returns:
+        {
+            'count': int,
+            'days': int,
+            'assignments': [Assignment]
+        }
+
+    Example:
+        upcoming = await get_upcoming_assignments(days=14)
+        print(f"Found {upcoming['count']} assignments due in next 14 days")
+    """
+    async with StudiePlusScraper() as scraper:
+        all_assignments = await scraper.get_homework()
+
+        cutoff_date = datetime.now() + timedelta(days=days)
+        upcoming = []
+
+        for assignment in all_assignments:
+            deadline_str = assignment.get('deadline', '')
+            if deadline_str:
+                try:
+                    deadline = datetime.strptime(deadline_str, '%d.%m.%Y %H:%M')
+                    if deadline <= cutoff_date:
+                        upcoming.append(assignment)
+                except:
+                    pass
+
+        return {
+            'count': len(upcoming),
+            'days': days,
+            'assignments': upcoming
+        }
+
+
+async def get_assignments_by_subject(subject: str) -> dict:
+    """
+    Get assignments filtered by subject name.
+
+    Args:
+        subject: Subject name (e.g., "Matematik", "Dansk", "Engelsk")
+
+    Returns:
+        {
+            'subject': str,
+            'count': int,
+            'assignments': [Assignment]
+        }
+
+    Example:
+        math_assignments = await get_assignments_by_subject("Matematik")
+        print(f"Found {math_assignments['count']} math assignments")
+    """
+    async with StudiePlusScraper() as scraper:
+        all_assignments = await scraper.get_homework()
+
+        filtered = [
+            a for a in all_assignments
+            if subject.lower() in a.get('subject', '').lower()
+        ]
+
+        return {
+            'subject': subject,
+            'count': len(filtered),
+            'assignments': filtered
+        }
+
+
+async def get_assignment_detail(row_index: str) -> dict:
+    """
+    Get detailed information about a specific assignment.
+
+    Args:
+        row_index: The row index of the assignment (from 'row_index' field)
+
+    Returns:
+        {
+            'assignment_title': str,
+            'subject': str,
+            'description': str,
+            'student_time': str,
+            'responsible': str,
+            'course': str,
+            'evaluation_form': str,
+            'groups': str,
+            'submission_status': str,
+            'deadline': str,
+            'files': [{'name': str, 'url': str}],
+            'row_index': str
+        }
+
+    Example:
+        details = await get_assignment_detail("5")
+        print(f"Assignment: {details['assignment_title']}")
+        print(f"Description: {details['description']}")
+    """
+    async with StudiePlusScraper() as scraper:
+        details = await scraper.get_assignment_details(row_index)
+        return details

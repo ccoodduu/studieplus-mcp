@@ -5,104 +5,69 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from studieplus_scraper.scraper import StudiePlusScraper
 from studieplus_scraper import api
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("Studie+ Homework Checker")
 
 
+# ==================== ASSIGNMENTS (Afleveringer fra Opgaver-siden) ====================
+
 @mcp.tool()
-async def get_homework() -> dict:
+async def get_assignments() -> dict:
     """
-    Get all homework assignments from Studie+ for the logged-in student.
+    Get all assignments (afleveringer) from the Opgaver page in Studie+.
+
+    These are formal assignments with deadlines, not daily homework from schedule.
 
     Returns a dictionary with:
-    - assignments: List of homework assignments with subject, title, deadline, etc.
     - count: Total number of assignments
+    - assignments: List of assignments with subject, title, deadline, hours, etc.
     """
-    async with StudiePlusScraper() as scraper:
-        homework = await scraper.get_homework()
-
-        return {
-            "count": len(homework),
-            "assignments": homework
-        }
+    return await api.get_all_assignments()
 
 
 @mcp.tool()
-async def get_upcoming_homework(days: int = 7) -> dict:
+async def get_upcoming_assignments(days: int = 7) -> dict:
     """
-    Get homework assignments with deadlines within the next N days.
+    Get assignments (afleveringer) with deadlines within the next N days.
 
     Args:
         days: Number of days to look ahead (default: 7)
 
-    Returns a dictionary with assignments due within the specified timeframe.
+    Returns assignments due within the specified timeframe.
     """
-    from datetime import datetime, timedelta
-
-    async with StudiePlusScraper() as scraper:
-        all_homework = await scraper.get_homework()
-
-        cutoff_date = datetime.now() + timedelta(days=days)
-        upcoming = []
-
-        for hw in all_homework:
-            deadline_str = hw.get('deadline', '')
-            if deadline_str:
-                try:
-                    deadline = datetime.strptime(deadline_str, '%d.%m.%Y %H:%M')
-                    if deadline <= cutoff_date:
-                        upcoming.append(hw)
-                except:
-                    pass
-
-        return {
-            "count": len(upcoming),
-            "days": days,
-            "assignments": upcoming
-        }
+    return await api.get_upcoming_assignments(days=days)
 
 
 @mcp.tool()
-async def get_homework_by_subject(subject: str) -> dict:
+async def get_assignments_by_subject(subject: str) -> dict:
     """
-    Get homework assignments for a specific subject.
+    Get assignments (afleveringer) for a specific subject.
 
     Args:
         subject: The subject name (e.g., "Matematik", "Dansk", "Engelsk")
 
-    Returns homework assignments filtered by subject.
+    Returns assignments filtered by subject.
     """
-    async with StudiePlusScraper() as scraper:
-        all_homework = await scraper.get_homework()
-
-        filtered = [hw for hw in all_homework
-                   if subject.lower() in hw.get('subject', '').lower()]
-
-        return {
-            "subject": subject,
-            "count": len(filtered),
-            "assignments": filtered
-        }
+    return await api.get_assignments_by_subject(subject=subject)
 
 
 @mcp.tool()
 async def get_assignment_details(row_index: str) -> dict:
     """
-    Get detailed information about a specific assignment.
+    Get detailed information about a specific assignment (aflevering).
 
     Args:
-        row_index: The row index of the assignment (from the 'row_index' field in homework list)
+        row_index: The row index of the assignment (from the 'row_index' field)
 
-    Returns detailed information including description and files.
+    Returns detailed information including description, files, and submission status.
     """
-    async with StudiePlusScraper() as scraper:
-        details = await scraper.get_assignment_details(row_index)
+    return await api.get_assignment_detail(row_index=row_index)
 
-        return details
 
+
+# ==================== HOMEWORK (Lektier fra skemaet) ====================
 
 @mcp.tool()
 async def get_schedule(week_offset: int = 0) -> dict:
@@ -124,9 +89,11 @@ async def get_schedule(week_offset: int = 0) -> dict:
 @mcp.tool()
 async def get_homework_overview(week_offset: int = 0, days_ahead: int = 7) -> dict:
     """
-    Get lessons with homework or notes from the schedule.
+    Get daily homework (lektier) and notes from the schedule (skema).
 
     This extracts homework and notes directly from the colored lesson boxes in the schedule.
+    These are NOT formal assignments/afleveringer - use get_assignments() for those.
+
     - Blue lessons indicate homework
     - Green lessons indicate notes/information
 
@@ -136,9 +103,7 @@ async def get_homework_overview(week_offset: int = 0, days_ahead: int = 7) -> di
 
     Returns a dictionary with:
     - count: Number of lessons with homework or notes
-    - lessons: List of lessons with homework/notes (includes date, weekday, time, subject, teacher, room)
-
-    Note: This is the new version of get_schedule_homework() with better date filtering and metadata.
+    - lessons: List of lessons with homework/notes text (includes date, weekday, time, subject, teacher, room)
     """
     return await api.get_homework_and_notes(
         week_offset=week_offset,
