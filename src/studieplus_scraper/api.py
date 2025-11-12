@@ -120,3 +120,64 @@ async def get_lesson_detail(date: str, time: str) -> dict:
     async with StudiePlusScraper() as scraper:
         detail = await scraper.get_lesson_details(date=date, time=time)
         return detail
+
+
+async def download_file(file_url: str, file_name: str, output_dir: str = "./downloads") -> dict:
+    """
+    Download a file from a lesson to the downloads folder.
+
+    Args:
+        file_url: URL of the file to download
+        file_name: Name of the file
+        output_dir: Directory to save the file (default: ./downloads)
+
+    Returns:
+        {
+            'success': bool,
+            'file_path': str,
+            'file_name': str,
+            'file_size': int
+        }
+
+    Example:
+        result = await download_file("https://...", "rapport.pdf")
+        print(f"Downloaded to: {result['file_path']}")
+    """
+    async with StudiePlusScraper() as scraper:
+        result = await scraper.download_lesson_file(
+            file_url=file_url,
+            file_name=file_name,
+            output_dir=output_dir
+        )
+        return result
+
+
+async def load_file(file_url: str, file_name: str) -> dict:
+    """
+    Load a file from a lesson and return its content for Claude to read.
+
+    Args:
+        file_url: URL of the file to load
+        file_name: Name of the file
+
+    Returns:
+        {
+            'success': bool,
+            'file_name': str,
+            'content': str or base64,
+            'content_type': str,
+            'size': int,
+            'is_text': bool
+        }
+
+    Example:
+        result = await load_file("https://...", "rapport.pdf")
+        if result['success']:
+            print(f"File content: {result['content']}")
+    """
+    async with StudiePlusScraper() as scraper:
+        result = await scraper.load_lesson_file(
+            file_url=file_url,
+            file_name=file_name
+        )
+        return result

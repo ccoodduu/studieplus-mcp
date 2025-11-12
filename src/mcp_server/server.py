@@ -162,6 +162,52 @@ async def get_lesson_details(date: str, time: str) -> dict:
 
 
 @mcp.tool()
+async def download_lesson_file(file_url: str, file_name: str, output_dir: str = "./downloads") -> dict:
+    """
+    Download a file from a lesson to the downloads folder.
+
+    Args:
+        file_url: URL of the file to download
+        file_name: Name of the file
+        output_dir: Directory to save the file (default: ./downloads)
+
+    Returns a dictionary with:
+    - success: Whether the download was successful
+    - file_path: Path to the downloaded file
+    - file_name: Name of the downloaded file
+    - file_size: Size of the file in bytes
+    """
+    return await api.download_file(
+        file_url=file_url,
+        file_name=file_name,
+        output_dir=output_dir
+    )
+
+
+@mcp.tool()
+async def load_lesson_file(file_url: str, file_name: str) -> dict:
+    """
+    Load a file from a lesson and return its content for Claude to read.
+
+    Args:
+        file_url: URL of the file to load
+        file_name: Name of the file
+
+    Returns a dictionary with:
+    - success: Whether the load was successful
+    - file_name: Name of the file
+    - content: File content (text or base64 encoded)
+    - content_type: MIME type of the file
+    - size: Size of the file in bytes
+    - is_text: Whether the file is text-based
+    """
+    return await api.load_file(
+        file_url=file_url,
+        file_name=file_name
+    )
+
+
+@mcp.tool()
 async def get_schedule_homework() -> dict:
     """
     DEPRECATED: Use get_homework_overview() instead for better functionality.

@@ -832,6 +832,39 @@ class StudiePlusScraper:
 
         lesson_id = f"{date}_{time.split('-')[0]}"
 
+        files = []
+        if has_files:
+            try:
+                bbox = target_lesson.find('rect').get('transform', '')
+                if bbox:
+                    match = re.search(r'translate\((\d+),\s*(\d+)\)', bbox)
+                    if match:
+                        x, y = int(match.group(1)), int(match.group(2))
+                        await self.page.mouse.click(x + 50, y + 20, force=True)
+                        await asyncio.sleep(1)
+
+                        await self.page.keyboard.press('Control+Alt+N')
+                        await asyncio.sleep(2)
+
+                        panel_content = await self.page.content()
+                        panel_soup = BeautifulSoup(panel_content, 'html.parser')
+
+                        file_links = panel_soup.find_all('a', href=True)
+                        for link in file_links:
+                            href = link.get('href', '')
+                            if 'download' in href or 'file' in href.lower():
+                                file_name = link.get_text(strip=True)
+                                if file_name:
+                                    files.append({
+                                        'name': file_name,
+                                        'url': href if href.startswith('http') else f"https://all.studieplus.dk{href}"
+                                    })
+
+                        await self.page.keyboard.press('Escape')
+                        await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"[!] Warning: Could not extract files: {e}")
+
         return {
             'id': lesson_id,
             'date': date,
@@ -845,8 +878,128 @@ class StudiePlusScraper:
             'has_files': has_files,
             'homework': homework_text,
             'note': note_text,
-            'files': []
+            'files': files
         }
+
+    async def download_lesson_file(self, file_url: str, file_name: str, output_dir: str = "./downloads") -> Dict:
+        """
+        Download a file from a lesson to the specified directory.
+
+        Args:
+            file_url: URL of the file to download
+            file_name: Name to save the file as
+            output_dir: Directory to save the file in (default: ./downloads)
+
+        Returns:
+            {
+                'success': bool,
+                'file_path': str,
+                'file_name': str,
+                'error': str (if failed)
+            }
+        """
+        import os
+        from pathlib import Path
+
+        if not self.page:
+            raise Exception("Browser not started. Call start() first.")
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+
+            safe_filename = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
+            file_path = os.path.join(output_dir, safe_filename)
+
+            async with self.page.context.expect_download() as download_info:
+                await self.page.goto(file_url)
+
+            download = await download_info.value
+            await download.save_as(file_path)
+
+            file_size = os.path.getsize(file_path)
+
+            return {
+                'success': True,
+                'file_path': file_path,
+                'file_name': safe_filename,
+                'file_size': file_size
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'file_path': '',
+                'file_name': file_name,
+                'error': str(e)
+            }
+
+    async def load_lesson_file(self, file_url: str, file_name: str) -> Dict:
+        """
+        Load a file from a lesson and return its content for Claude to read.
+
+        Args:
+            file_url: URL of the file to load
+            file_name: Name of the file
+
+        Returns:
+            {
+                'success': bool,
+                'file_name': str,
+                'content': bytes or str,
+                'content_type': str,
+                'size': int,
+                'error': str (if failed)
+            }
+        """
+        if not self.page:
+            raise Exception("Browser not started. Call start() first.")
+
+        try:
+            response = await self.page.context.request.get(file_url)
+
+            if response.status != 200:
+                return {
+                    'success': False,
+                    'file_name': file_name,
+                    'content': None,
+                    'error': f"HTTP {response.status}"
+                }
+
+            content = await response.body()
+            content_type = response.headers.get('content-type', 'application/octet-stream')
+
+            if 'text' in content_type or 'json' in content_type or 'xml' in content_type:
+                try:
+                    content_str = content.decode('utf-8')
+                    return {
+                        'success': True,
+                        'file_name': file_name,
+                        'content': content_str,
+                        'content_type': content_type,
+                        'size': len(content),
+                        'is_text': True
+                    }
+                except:
+                    pass
+
+            import base64
+            return {
+                'success': True,
+                'file_name': file_name,
+                'content': base64.b64encode(content).decode('utf-8'),
+                'content_type': content_type,
+                'size': len(content),
+                'is_text': False,
+                'encoding': 'base64'
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'file_name': file_name,
+                'content': None,
+                'error': str(e)
+            }
 
 
 async def main():
