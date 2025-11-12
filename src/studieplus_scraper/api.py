@@ -6,8 +6,59 @@ It provides a clean interface between the raw scraper and the MCP server.
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 from .scraper import StudiePlusScraper
+
+
+# ==================== CACHE ====================
+
+class SimpleCache:
+    """Simple in-memory cache with TTL (Time To Live)"""
+
+    def __init__(self):
+        self._cache: Dict[str, Dict] = {}
+
+    def get(self, key: str, ttl_seconds: int) -> Optional[any]:
+        """Get cached value if not expired"""
+        if key not in self._cache:
+            return None
+
+        entry = self._cache[key]
+        age = (datetime.now() - entry['timestamp']).total_seconds()
+
+        if age > ttl_seconds:
+            # Expired, remove from cache
+            del self._cache[key]
+            return None
+
+        return entry['data']
+
+    def set(self, key: str, data: any):
+        """Store data in cache with timestamp"""
+        self._cache[key] = {
+            'data': data,
+            'timestamp': datetime.now()
+        }
+
+    def clear(self):
+        """Clear all cached data"""
+        self._cache.clear()
+
+    def invalidate(self, pattern: str):
+        """Invalidate cache entries matching pattern"""
+        keys_to_remove = [k for k in self._cache.keys() if pattern in k]
+        for key in keys_to_remove:
+            del self._cache[key]
+
+
+# Global cache instance
+_cache = SimpleCache()
+
+
+# Cache TTL settings (in seconds)
+SCHEDULE_TTL = 300  # 5 minutes
+ASSIGNMENTS_TTL = 600  # 10 minutes
+LESSON_DETAILS_TTL = 300  # 5 minutes
 
 
 async def get_full_schedule(week_offset: int = 0) -> dict:
@@ -29,15 +80,28 @@ async def get_full_schedule(week_offset: int = 0) -> dict:
         schedule = await get_full_schedule(week_offset=0)
         print(f"Week {schedule['week']}: {len(schedule['lessons'])} lessons")
     """
+    cache_key = f"schedule_week_{week_offset}"
+
+    # Check cache first
+    cached = _cache.get(cache_key, SCHEDULE_TTL)
+    if cached is not None:
+        return cached
+
+    # Cache miss, fetch from scraper
     async with StudiePlusScraper() as scraper:
         lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
 
-        return {
+        result = {
             "week": week_number,
             "year": year,
             "dates": dates,
             "lessons": lessons
         }
+
+        # Store in cache
+        _cache.set(cache_key, result)
+
+        return result
 
 
 async def get_homework_and_notes(
@@ -117,8 +181,20 @@ async def get_lesson_detail(date: str, time: str) -> dict:
         detail = await get_lesson_detail("2025-11-10", "08:15-09:15")
         print(f"Homework: {detail['homework']}")
     """
+    cache_key = f"lesson_{date}_{time}"
+
+    # Check cache first
+    cached = _cache.get(cache_key, LESSON_DETAILS_TTL)
+    if cached is not None:
+        return cached
+
+    # Cache miss, fetch from scraper
     async with StudiePlusScraper() as scraper:
         detail = await scraper.get_lesson_details(date=date, time=time)
+
+        # Store in cache
+        _cache.set(cache_key, detail)
+
         return detail
 
 
@@ -210,12 +286,25 @@ async def get_all_assignments() -> dict:
         assignments = await get_all_assignments()
         print(f"Found {assignments['count']} assignments")
     """
+    cache_key = "assignments_all"
+
+    # Check cache first
+    cached = _cache.get(cache_key, ASSIGNMENTS_TTL)
+    if cached is not None:
+        return cached
+
+    # Cache miss, fetch from scraper
     async with StudiePlusScraper() as scraper:
         assignments = await scraper.get_homework()
-        return {
+        result = {
             'count': len(assignments),
             'assignments': assignments
         }
+
+        # Store in cache
+        _cache.set(cache_key, result)
+
+        return result
 
 
 async def get_upcoming_assignments(days: int = 7) -> dict:
