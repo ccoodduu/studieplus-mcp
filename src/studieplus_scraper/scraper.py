@@ -595,7 +595,7 @@ class StudiePlusScraper:
         for _ in range(clicks):
             try:
                 await self.page.click(button_selector)
-                await asyncio.sleep(0.5)
+                await self.page.wait_for_load_state('networkidle', timeout=3000)
             except Exception as e:
                 print(f"[!] Warning: Could not navigate week: {e}")
                 break
@@ -622,8 +622,6 @@ class StudiePlusScraper:
             raise Exception("Login failed")
 
         await self.navigate_to_week(week_offset)
-
-        await asyncio.sleep(2)
 
         content = await self.page.content()
         soup = BeautifulSoup(content, 'html.parser')
@@ -743,7 +741,6 @@ class StudiePlusScraper:
         week_offset = target_week - current_week
 
         await self.navigate_to_week(week_offset)
-        await asyncio.sleep(2)
 
         content = await self.page.content()
         soup = BeautifulSoup(content, 'html.parser')
@@ -841,10 +838,10 @@ class StudiePlusScraper:
                     if match:
                         x, y = int(match.group(1)), int(match.group(2))
                         await self.page.mouse.click(x + 50, y + 20, force=True)
-                        await asyncio.sleep(1)
+                        await self.page.wait_for_load_state('domcontentloaded', timeout=2000)
 
                         await self.page.keyboard.press('Control+Alt+N')
-                        await asyncio.sleep(2)
+                        await self.page.wait_for_load_state('domcontentloaded', timeout=2000)
 
                         panel_content = await self.page.content()
                         panel_soup = BeautifulSoup(panel_content, 'html.parser')
@@ -861,7 +858,6 @@ class StudiePlusScraper:
                                     })
 
                         await self.page.keyboard.press('Escape')
-                        await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"[!] Warning: Could not extract files: {e}")
 
