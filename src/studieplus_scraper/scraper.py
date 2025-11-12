@@ -38,15 +38,12 @@ class StudiePlusScraper:
         if self.playwright:
             await self.playwright.stop()
 
-    async def login(self) -> bool:
-        if self.logged_in:
-            print("[*] Already logged in, skipping login")
-            return True
-
+    async def _attempt_login(self) -> bool:
+        """Single login attempt. Returns True if successful, False otherwise."""
         try:
             print("[*] Navigating to Studie+ login page...")
             await self.page.goto("https://all.studieplus.dk/")
-            await self.page.wait_for_load_state("networkidle")
+            await self.page.wait_for_load_state("networkidle", timeout=8000)
 
             print("[*] Waiting for Select2 to initialize...")
             await self.page.wait_for_selector(".select2-container", timeout=10000)
@@ -111,7 +108,7 @@ class StudiePlusScraper:
             await submit_button.click()
             print("[+] Clicked submit button")
 
-            await self.page.wait_for_load_state("networkidle")
+            await self.page.wait_for_load_state("networkidle", timeout=10000)
 
             await self.page.screenshot(path="after_login.png")
             print("[*] Screenshot saved to after_login.png")
@@ -126,15 +123,37 @@ class StudiePlusScraper:
                 return False
 
         except Exception as e:
-            print(f"[-] Login error: {e}")
+            print(f"[-] Login attempt error: {e}")
             try:
                 await self.page.screenshot(path="error_page.png")
                 print("[*] Error screenshot saved to error_page.png")
             except:
                 pass
-            content = await self.page.content()
-            print(f"Page content length: {len(content)}")
             return False
+
+    async def login(self) -> bool:
+        """Login with automatic retry (max 3 attempts)."""
+        if self.logged_in:
+            print("[*] Already logged in, skipping login")
+            return True
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            print(f"\n[*] Login attempt {attempt}/{max_attempts}")
+
+            success = await self._attempt_login()
+
+            if success:
+                return True
+
+            if attempt < max_attempts:
+                print(f"[!] Login attempt {attempt} failed, retrying...")
+                await asyncio.sleep(1)
+            else:
+                print(f"[-] All {max_attempts} login attempts failed")
+                return False
+
+        return False
 
     async def get_homework(self) -> List[Dict]:
         if not self.page:
