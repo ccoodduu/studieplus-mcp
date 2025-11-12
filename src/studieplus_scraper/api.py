@@ -1,0 +1,122 @@
+"""
+API Layer for StudiePlus Scraper
+
+This layer handles business logic, data transformation, and scraper lifecycle management.
+It provides a clean interface between the raw scraper and the MCP server.
+"""
+
+from datetime import datetime, timedelta
+from typing import Dict, List
+from .scraper import StudiePlusScraper
+
+
+async def get_full_schedule(week_offset: int = 0) -> dict:
+    """
+    Get complete weekly schedule with all lessons.
+
+    Args:
+        week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
+
+    Returns:
+        {
+            "week": "46",
+            "year": "2025",
+            "dates": ["2025-11-10", "2025-11-11", ...],
+            "lessons": [Lesson (Basic)]
+        }
+
+    Example:
+        schedule = await get_full_schedule(week_offset=0)
+        print(f"Week {schedule['week']}: {len(schedule['lessons'])} lessons")
+    """
+    async with StudiePlusScraper() as scraper:
+        lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
+
+        return {
+            "week": week_number,
+            "year": year,
+            "dates": dates,
+            "lessons": lessons
+        }
+
+
+async def get_homework_and_notes(
+    week_offset: int = 0,
+    days_ahead: int = 7,
+    include_details: bool = True
+) -> dict:
+    """
+    Get lessons with homework or notes.
+
+    Args:
+        week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
+        days_ahead: Filter by days from today (7=next week, 14=two weeks, etc.)
+        include_details: Fetch full homework/notes text (if False, only returns flags)
+
+    Returns:
+        {
+            "count": 5,
+            "lessons": [Lesson (Basic) or (Extended) if include_details]
+        }
+
+    Example:
+        homework = await get_homework_and_notes(days_ahead=7, include_details=True)
+        print(f"Found {homework['count']} lessons with homework/notes")
+    """
+    async with StudiePlusScraper() as scraper:
+        lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
+
+        # Filter: only lessons with homework or notes
+        filtered = [l for l in lessons if l['has_homework'] or l['has_note']]
+
+        # Filter by days_ahead (from today)
+        today = datetime.now().date()
+        cutoff_date = today + timedelta(days=days_ahead)
+
+        date_filtered = []
+        for lesson in filtered:
+            lesson_date = datetime.strptime(lesson['date'], '%Y-%m-%d').date()
+            if today <= lesson_date <= cutoff_date:
+                date_filtered.append(lesson)
+
+        # If include_details is True, fetch full details for each lesson
+        if include_details:
+            detailed_lessons = []
+            for lesson in date_filtered:
+                try:
+                    detail = await scraper.get_lesson_details(lesson['date'], lesson['time'])
+                    detailed_lessons.append(detail)
+                except Exception as e:
+                    print(f"[!] Warning: Could not fetch details for {lesson['id']}: {e}")
+                    # Fallback to basic lesson data
+                    detailed_lessons.append(lesson)
+
+            return {
+                "count": len(detailed_lessons),
+                "lessons": detailed_lessons
+            }
+        else:
+            return {
+                "count": len(date_filtered),
+                "lessons": date_filtered
+            }
+
+
+async def get_lesson_detail(date: str, time: str) -> dict:
+    """
+    Get full details for a specific lesson.
+
+    Args:
+        date: ISO format (YYYY-MM-DD)
+        time: Time range (HH:MM-HH:MM)
+
+    Returns:
+        Lesson (Extended) with homework, notes, and files
+
+    Example:
+        detail = await get_lesson_detail("2025-11-10", "08:15-09:15")
+        print(f"Homework: {detail['homework']}")
+    """
+    async with StudiePlusScraper() as scraper:
+        detail = await scraper.get_lesson_details(date=date, time=time)
+        return detail
