@@ -143,7 +143,7 @@ async def get_homework_overview(week_offset: int = 0, days_ahead: int = 7) -> di
     return await api.get_homework_and_notes(
         week_offset=week_offset,
         days_ahead=days_ahead,
-        include_details=False  # Set to False until get_lesson_details is implemented in scraper
+        include_details=True
     )
 
 
@@ -157,8 +157,6 @@ async def get_lesson_details(date: str, time: str) -> dict:
         time: Time range (HH:MM-HH:MM, e.g., "08:15-09:15")
 
     Returns detailed lesson information including homework text, notes, and file attachments.
-
-    Note: This function requires the scraper.get_lesson_details() method to be implemented.
     """
     return await api.get_lesson_detail(date=date, time=time)
 
