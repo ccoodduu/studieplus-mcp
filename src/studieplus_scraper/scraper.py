@@ -531,19 +531,20 @@ class StudiePlusScraper:
         weekdays = ["Man", "Tir", "Ons", "Tor", "Fre", "Lør", "Søn"]
         dates = []
 
-        date_labels = soup.find_all('div', class_='gwt-Label')
-
+        # Find week info from buttons (new format)
         week_info = None
-        for label in date_labels:
-            text = label.get_text(strip=True)
+        buttons = soup.find_all('button')
+        for btn in buttons:
+            text = btn.get_text(strip=True)
             if "Uge" in text and "-" in text:
                 week_info = text
                 break
 
+        # Fallback to labels (old format)
         if not week_info:
-            buttons = soup.find_all('button')
-            for btn in buttons:
-                text = btn.get_text(strip=True)
+            date_labels = soup.find_all('div', class_='gwt-Label')
+            for label in date_labels:
+                text = label.get_text(strip=True)
                 if "Uge" in text and "-" in text:
                     week_info = text
                     break
@@ -557,6 +558,9 @@ class StudiePlusScraper:
 
         week_number = week_match.group(1)
         year = week_match.group(2)
+
+        # Find dates from gwt-Label divs
+        date_labels = soup.find_all('div', class_='gwt-Label')
 
         for label in date_labels:
             text = label.get_text(strip=True)
@@ -654,88 +658,116 @@ class StudiePlusScraper:
 
         week_dates, week_number, year = self.parse_week_dates(soup)
 
-        lesson_groups = soup.find_all('g', class_='CAHE1CD-h-b')
-        print(f"[+] Found {len(lesson_groups)} lessons in schedule")
+        # Find day containers (one per weekday)
+        day_containers = soup.find_all('g', class_='DagMedBrikker')
+        print(f"[+] Found {len(day_containers)} day containers")
 
         lessons = []
 
-        for lesson in lesson_groups:
-            transform = lesson.get('transform', '')
-            if not transform:
+        for day_container in day_containers:
+            # Get day from container's transform
+            container_transform = day_container.get('transform', '')
+            if not container_transform:
                 continue
 
-            lesson_date, weekday = self.calculate_lesson_date(transform, week_dates)
-
-            rect = lesson.find('rect')
-            if not rect:
+            # Calculate which day this container represents
+            match = re.search(r'translate\((\d+),\s*(\d+)\)', container_transform)
+            if not match:
                 continue
 
-            fill_color = rect.get('style', '')
-            color_match = re.search(r'fill:\s*rgb\((\d+),\s*(\d+),\s*(\d+)\)', fill_color)
+            x_pos = int(match.group(1))
+            day_index = x_pos // 197  # 197 pixels per day column
 
-            if not color_match:
+            if day_index >= len(week_dates):
                 continue
 
-            r, g, b = map(int, color_match.groups())
+            lesson_date = week_dates[day_index]
+            weekday_names = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
+            weekday = weekday_names[day_index] if day_index < len(weekday_names) else "Unknown"
 
-            texts = lesson.find_all('text')
+            # Find all lessons in this day container
+            lesson_groups = day_container.find_all('g', class_='CAHE1CD-h-b')
 
-            time = ""
-            subject = ""
-            room = ""
-            teacher = ""
+            for lesson in lesson_groups:
+                rect = lesson.find('rect')
+                if not rect:
+                    continue
 
-            for text_elem in texts:
-                text_content = text_elem.get_text(strip=True)
+                fill_color = rect.get('style', '')
+                color_match = re.search(r'fill:\s*rgb\((\d+),\s*(\d+),\s*(\d+)\)', fill_color)
 
-                if re.match(r'\d{2}:\d{2}-\d{2}:\d{2}', text_content):
-                    time = text_content
+                if not color_match:
+                    continue
 
-                if text_elem.get('style', '') and 'font-weight: bold' in text_elem.get('style'):
-                    if ':' not in text_content:
-                        subject = text_content
+                r, g, b = map(int, color_match.groups())
 
-                if len(text_content) > 2 and len(text_content) < 20:
-                    if text_content.startswith('M') or text_content.startswith('N'):
-                        room = text_content
-                    elif text_content.islower() and len(text_content) < 10 and text_content.isalpha():
-                        teacher = text_content
+                texts = lesson.find_all('text')
 
-            has_homework = False
-            has_note = False
-            has_files = False
+                time = ""
+                subject = ""
+                room = ""
+                teacher = ""
 
-            for text_elem in texts:
-                title_elem = text_elem.find('title')
-                if title_elem:
-                    title_content = title_elem.get_text(strip=True)
+                for text_elem in texts:
+                    text_content = text_elem.get_text(strip=True)
 
-                    if '*** Lektier ***' in title_content or '*** Homework ***' in title_content:
-                        has_homework = True
+                    if re.match(r'\d{2}:\d{2}-\d{2}:\d{2}', text_content):
+                        time = text_content
 
-                    if '*** Noter ***' in title_content or '*** Notes ***' in title_content:
-                        has_note = True
+                    if text_elem.get('style', '') and 'font-weight: bold' in text_elem.get('style'):
+                        if ':' not in text_content:
+                            subject = text_content
 
-                    if '*** Har filer ***' in title_content or '*** Has files ***' in title_content:
-                        has_files = True
+                    if len(text_content) > 2 and len(text_content) < 20:
+                        if text_content.startswith('M') or text_content.startswith('N'):
+                            room = text_content
+                        elif text_content.islower() and len(text_content) < 10 and text_content.isalpha():
+                            teacher = text_content
 
-            if not time or not subject:
-                continue
+                has_homework = False
+                has_note = False
+                has_files = False
 
-            lesson_id = f"{lesson_date}_{time.split('-')[0]}"
+                for text_elem in texts:
+                    title_elem = text_elem.find('title')
+                    if title_elem:
+                        title_content = title_elem.get_text(strip=True)
 
-            lessons.append({
-                'id': lesson_id,
-                'date': lesson_date,
-                'weekday': weekday,
-                'time': time,
-                'subject': subject,
-                'teacher': teacher,
-                'room': room,
-                'has_homework': has_homework,
-                'has_note': has_note,
-                'has_files': has_files
-            })
+                        # Check for homework - only if there's actual content after the header
+                        if '*** Lektier ***' in title_content or '*** Homework ***' in title_content:
+                            # Check if there's text after the header (more than just the header itself)
+                            content_after_header = title_content.replace('*** Lektier ***', '').replace('*** Homework ***', '').strip()
+                            if content_after_header and len(content_after_header) > 0:
+                                has_homework = True
+
+                        # Check for notes - only if there's actual content after the header
+                        if '*** Noter ***' in title_content or '*** Notes ***' in title_content:
+                            # Check if there's text after the header (more than just the header itself)
+                            content_after_header = title_content.replace('*** Noter ***', '').replace('*** Notes ***', '').strip()
+                            if content_after_header and len(content_after_header) > 0:
+                                has_note = True
+
+                        # Files indicator usually doesn't have content, just the marker
+                        if '*** Har filer ***' in title_content or '*** Has files ***' in title_content:
+                            has_files = True
+
+                if not time or not subject:
+                    continue
+
+                lesson_id = f"{lesson_date}_{time.split('-')[0]}"
+
+                lessons.append({
+                    'id': lesson_id,
+                    'date': lesson_date,
+                    'weekday': weekday,
+                    'time': time,
+                    'subject': subject,
+                    'teacher': teacher,
+                    'room': room,
+                    'has_homework': has_homework,
+                    'has_note': has_note,
+                    'has_files': has_files
+                })
 
         print(f"[+] Parsed {len(lessons)} valid lessons")
         return (lessons, week_number, year, week_dates)
