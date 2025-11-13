@@ -163,6 +163,9 @@ async def get_schedule(week_offset: int = 0) -> dict:
     """
     Get complete weekly schedule with all lessons, dates, and metadata.
 
+    Note: For most use cases, prefer get_homework_overview() or get_notes() which automatically
+    handle multiple weeks. This function is useful when you need the full schedule for a specific week.
+
     Args:
         week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
 
@@ -187,7 +190,7 @@ async def get_schedule(week_offset: int = 0) -> dict:
 
 
 @mcp.tool()
-async def get_homework_overview(week_offset: int = 0, days_ahead: int = 7) -> dict:
+async def get_homework_overview(days_ahead: int = 7) -> dict:
     """
     Get daily homework (lektier) and notes from the schedule (skema).
 
@@ -197,9 +200,10 @@ async def get_homework_overview(week_offset: int = 0, days_ahead: int = 7) -> di
     - Blue lessons indicate homework
     - Green lessons indicate notes/information
 
+    Automatically fetches from multiple weeks if needed.
+
     Args:
-        week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
-        days_ahead: How many days to look ahead from today (default: 7)
+        days_ahead: How many days to look ahead from today (default: 7, max: 30)
 
     Returns a dictionary with:
     - current_time: Current date and time for Claude's context
@@ -207,7 +211,42 @@ async def get_homework_overview(week_offset: int = 0, days_ahead: int = 7) -> di
     - lessons: List of lessons with homework/notes text (includes date, weekday, time, subject, teacher, room)
     """
     result = await api.get_homework_and_notes(
-        week_offset=week_offset,
+        days_ahead=days_ahead,
+        include_details=True
+    )
+
+    # Add current time context for Claude
+    result['current_time'] = format_datetime_for_claude()
+
+    # Format dates in all lessons
+    for lesson in result.get('lessons', []):
+        if lesson.get('date'):
+            lesson['date'] = format_date_string(lesson['date'], include_time=False)
+
+    return result
+
+
+@mcp.tool()
+async def get_notes(days_ahead: int = 7) -> dict:
+    """
+    Get notes (noter) from lessons in the schedule.
+
+    This extracts notes directly from the green lesson boxes in the schedule.
+    Green lessons indicate notes/information from teachers.
+
+    Use this to find teacher notes, announcements, or information about lessons.
+
+    Automatically fetches from multiple weeks if needed.
+
+    Args:
+        days_ahead: How many days to look ahead from today (default: 7, max: 30)
+
+    Returns a dictionary with:
+    - current_time: Current date and time for Claude's context
+    - count: Number of lessons with notes
+    - lessons: List of lessons with notes (includes date, weekday, time, subject, teacher, room, note text)
+    """
+    result = await api.get_notes_overview(
         days_ahead=days_ahead,
         include_details=True
     )

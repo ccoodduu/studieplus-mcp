@@ -116,6 +116,13 @@ class StudiePlusScraper:
             current_url = self.page.url
             if "login" not in current_url.lower():
                 print(f"[+] Login successful! Current URL: {current_url}")
+
+                # Navigate to schedule page
+                print("[*] Navigating to schedule page...")
+                await self.page.goto("https://all.studieplus.dk/skema/")
+                await self.page.wait_for_load_state("networkidle", timeout=10000)
+                print(f"[+] Now on schedule page: {self.page.url}")
+
                 self.logged_in = True
                 return True
             else:

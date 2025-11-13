@@ -105,48 +105,59 @@ async def get_full_schedule(week_offset: int = 0) -> dict:
 
 
 async def get_homework_and_notes(
-    week_offset: int = 0,
     days_ahead: int = 7,
     include_details: bool = True
 ) -> dict:
     """
     Get lessons with homework or notes.
 
+    Automatically fetches from multiple weeks if needed to cover the days_ahead range.
+
     Args:
-        week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
-        days_ahead: Filter by days from today (7=next week, 14=two weeks, etc.)
+        days_ahead: Number of days to look ahead from today (default: 7)
         include_details: Fetch full homework/notes text (if False, only returns flags)
 
     Returns:
         {
-            "count": 5,
+            "count": int,
             "lessons": [Lesson (Basic) or (Extended) if include_details]
         }
 
     Example:
-        homework = await get_homework_and_notes(days_ahead=7, include_details=True)
-        print(f"Found {homework['count']} lessons with homework/notes")
+        homework = await get_homework_and_notes(days_ahead=14, include_details=True)
+        print(f"Found {homework['count']} lessons with homework/notes in next 14 days")
     """
     async with StudiePlusScraper() as scraper:
-        lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
-
-        # Filter: only lessons with homework or notes
-        filtered = [l for l in lessons if l['has_homework'] or l['has_note']]
-
-        # Filter by days_ahead (from today)
         today = datetime.now().date()
         cutoff_date = today + timedelta(days=days_ahead)
 
-        date_filtered = []
-        for lesson in filtered:
-            lesson_date = datetime.strptime(lesson['date'], '%Y-%m-%d').date()
-            if today <= lesson_date <= cutoff_date:
-                date_filtered.append(lesson)
+        # Calculate how many weeks we need to fetch
+        current_week = today.isocalendar()[1]
+        target_week = cutoff_date.isocalendar()[1]
+        weeks_to_fetch = target_week - current_week + 1
+
+        all_filtered = []
+
+        # Fetch lessons from all necessary weeks
+        for week_offset in range(weeks_to_fetch):
+            try:
+                lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
+
+                # Filter: only lessons with homework or notes
+                filtered = [l for l in lessons if l['has_homework'] or l['has_note']]
+
+                # Filter by date range
+                for lesson in filtered:
+                    lesson_date = datetime.strptime(lesson['date'], '%Y-%m-%d').date()
+                    if today <= lesson_date <= cutoff_date:
+                        all_filtered.append(lesson)
+            except Exception as e:
+                print(f"[!] Warning: Could not fetch week {week_offset}: {e}")
 
         # If include_details is True, fetch full details for each lesson
         if include_details:
             detailed_lessons = []
-            for lesson in date_filtered:
+            for lesson in all_filtered:
                 try:
                     detail = await scraper.get_lesson_details(lesson['date'], lesson['time'])
                     detailed_lessons.append(detail)
@@ -161,8 +172,8 @@ async def get_homework_and_notes(
             }
         else:
             return {
-                "count": len(date_filtered),
-                "lessons": date_filtered
+                "count": len(all_filtered),
+                "lessons": all_filtered
             }
 
 
@@ -196,6 +207,80 @@ async def get_lesson_detail(date: str, time: str) -> dict:
         _cache.set(cache_key, detail)
 
         return detail
+
+
+async def get_notes_overview(
+    days_ahead: int = 7,
+    include_details: bool = True
+) -> dict:
+    """
+    Get lessons with notes.
+
+    Automatically fetches from multiple weeks if needed to cover the days_ahead range.
+
+    Args:
+        days_ahead: Number of days to look ahead from today (default: 7)
+        include_details: Fetch full notes text (if False, only returns flags)
+
+    Returns:
+        {
+            "count": int,
+            "lessons": [Lesson (Basic) or (Extended) if include_details]
+        }
+
+    Example:
+        notes = await get_notes_overview(days_ahead=14, include_details=True)
+        print(f"Found {notes['count']} lessons with notes in next 14 days")
+    """
+    async with StudiePlusScraper() as scraper:
+        today = datetime.now().date()
+        cutoff_date = today + timedelta(days=days_ahead)
+
+        # Calculate how many weeks we need to fetch
+        # Get current week number and target week number
+        current_week = today.isocalendar()[1]
+        target_week = cutoff_date.isocalendar()[1]
+        weeks_to_fetch = target_week - current_week + 1
+
+        all_filtered = []
+
+        # Fetch lessons from all necessary weeks
+        for week_offset in range(weeks_to_fetch):
+            try:
+                lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
+
+                # Filter: only lessons with notes
+                filtered = [l for l in lessons if l['has_note']]
+
+                # Filter by date range
+                for lesson in filtered:
+                    lesson_date = datetime.strptime(lesson['date'], '%Y-%m-%d').date()
+                    if today <= lesson_date <= cutoff_date:
+                        all_filtered.append(lesson)
+            except Exception as e:
+                print(f"[!] Warning: Could not fetch week {week_offset}: {e}")
+
+        # If include_details is True, fetch full details for each lesson
+        if include_details:
+            detailed_lessons = []
+            for lesson in all_filtered:
+                try:
+                    detail = await scraper.get_lesson_details(lesson['date'], lesson['time'])
+                    detailed_lessons.append(detail)
+                except Exception as e:
+                    print(f"[!] Warning: Could not fetch details for {lesson['id']}: {e}")
+                    # Fallback to basic lesson data
+                    detailed_lessons.append(lesson)
+
+            return {
+                "count": len(detailed_lessons),
+                "lessons": detailed_lessons
+            }
+        else:
+            return {
+                "count": len(all_filtered),
+                "lessons": all_filtered
+            }
 
 
 async def download_file(file_url: str, file_name: str, output_dir: str = "./downloads") -> dict:
