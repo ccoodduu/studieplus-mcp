@@ -31,3 +31,10 @@ simple_*.py
 # Debug output folder (keep .gitkeep)
 debug/*
 !debug/.gitkeep
+
+# GWT reverse engineering files (JS source analysis)
+gwt_analysis/
+webcrack_output/
+node_modules/
+package.json
+package-lock.json
