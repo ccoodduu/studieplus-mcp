@@ -401,6 +401,48 @@ async def load_file(file_url: str, file_name: str) -> dict:
         return result
 
 
+async def get_lesson_files(lesson_id: int) -> dict:
+    """
+    Get files attached to a lesson with download URLs.
+
+    Args:
+        lesson_id: The lesson ID (from the 'lesson_id' field in schedule)
+
+    Returns:
+        {
+            'lesson_id': int,
+            'count': int,
+            'files': [
+                {
+                    'name': str,
+                    'id': int,
+                    'url': str  # Signed S3 URL, valid for ~5 minutes
+                }
+            ]
+        }
+
+    Example:
+        files = await get_lesson_files(7620074)
+        for f in files['files']:
+            print(f"{f['name']}: {f['url']}")
+    """
+    scraper = get_scraper()
+    if hasattr(scraper, 'get_lesson_files_with_urls'):
+        files = scraper.get_lesson_files_with_urls(lesson_id)
+        return {
+            'lesson_id': lesson_id,
+            'count': len(files),
+            'files': files
+        }
+    else:
+        return {
+            'lesson_id': lesson_id,
+            'count': 0,
+            'files': [],
+            'error': 'File API not available with Playwright scraper'
+        }
+
+
 # ==================== ASSIGNMENTS (Afleveringer) ====================
 
 async def get_all_assignments() -> dict:

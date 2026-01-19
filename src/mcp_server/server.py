@@ -366,6 +366,32 @@ async def load_lesson_file(file_url: str, file_name: str) -> dict:
 
 
 @mcp.tool()
+async def get_lesson_files(lesson_id: int) -> dict:
+    """
+    Get files attached to a specific lesson with download URLs.
+
+    Use this to find and download files from a lesson. First get the schedule
+    to find the lesson_id, then call this function to get the file list.
+
+    Args:
+        lesson_id: The lesson ID (from the 'lesson_id' field in schedule response)
+
+    Returns a dictionary with:
+    - lesson_id: The lesson ID
+    - count: Number of files
+    - files: List of files with name, id, and download URL
+
+    Note: Download URLs are signed S3 URLs valid for ~5 minutes.
+    """
+    result = await api.get_lesson_files(lesson_id=lesson_id)
+
+    # Add current time context for Claude
+    result['current_time'] = format_datetime_for_claude()
+
+    return result
+
+
+@mcp.tool()
 async def get_schedule_homework() -> dict:
     """
     DEPRECATED: Use get_homework_overview() instead for better functionality.
