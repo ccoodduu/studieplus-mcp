@@ -17,3 +17,17 @@ build/
 .DS_Store
 playwright-state/
 .claude/
+
+# Test files
+test_*.py
+
+# Temporary analysis and debug files
+analyze_*.py
+extract_*.py
+find_*.py
+parse_*.py
+simple_*.py
+
+# Debug output folder (keep .gitkeep)
+debug/*
+!debug/.gitkeep

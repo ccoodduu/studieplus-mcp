@@ -6,8 +6,16 @@ from datetime import datetime
 from playwright.async_api import async_playwright, Page, Browser
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from .logger import logger
 
 load_dotenv()
+
+DEBUG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "debug")
+os.makedirs(DEBUG_DIR, exist_ok=True)
+
+def debug_path(filename: str) -> str:
+    """Return path to debug file in the debug/ folder."""
+    return os.path.join(DEBUG_DIR, filename)
 
 
 class StudiePlusScraper:
@@ -29,7 +37,10 @@ class StudiePlusScraper:
 
     async def start(self):
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=True)
+        debug = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
+        self.browser = await self.playwright.chromium.launch(
+            headless=not debug
+        )
         self.page = await self.browser.new_page()
 
     async def close(self):
@@ -41,37 +52,33 @@ class StudiePlusScraper:
     async def _attempt_login(self) -> bool:
         """Single login attempt. Returns True if successful, False otherwise."""
         try:
-            print("[*] Navigating to Studie+ login page...")
+            logger.info("Navigating to Studie+ login page...")
             await self.page.goto("https://all.studieplus.dk/")
             await self.page.wait_for_load_state("networkidle", timeout=8000)
 
-            print("[*] Waiting for Select2 to initialize...")
+            logger.info("Waiting for Select2 to initialize...")
             await self.page.wait_for_selector(".select2-container", timeout=10000)
-            print("[+] Select2 loaded")
+            logger.info("Select2 loaded")
 
-            print(f"[*] Clicking Select2 dropdown...")
+            logger.info("Clicking Select2 dropdown...")
             await self.page.click(".select2-container")
-            await asyncio.sleep(0.3)
 
-            print(f"[*] Looking for school: {self.school}")
+            logger.info(f"Looking for school: {self.school}")
             search_input = await self.page.wait_for_selector(".select2-search input, .select2-input", timeout=5000)
             await search_input.type(self.school)
-            await asyncio.sleep(0.3)
 
             result = await self.page.wait_for_selector(f".select2-results .select2-result:has-text('{self.school}')", timeout=5000)
             await result.click()
+            logger.info(f"Selected school: {self.school}")
 
-            await asyncio.sleep(0.3)
-            print(f"[+] Selected school: {self.school}")
-
-            await self.page.screenshot(path="before_login_button.png")
-            print("[*] Screenshot saved")
+            await self.page.screenshot(path=debug_path("before_login_button.png"))
+            logger.debug("Screenshot saved")
 
             direkte_button = await self.page.wait_for_selector("button#direkte, button[name='how'][value='DIREKTE']", timeout=5000)
             await direkte_button.click()
-            print("[+] Clicked 'Direkte' login button")
+            logger.info("Clicked 'Direkte' login button")
 
-            print("[*] Waiting for login fields...")
+            logger.info("Waiting for login fields...")
             username_field = None
             possible_selectors = [
                 "input[name='user']",
@@ -86,54 +93,45 @@ class StudiePlusScraper:
                 try:
                     username_field = await self.page.wait_for_selector(selector, timeout=8000)
                     if username_field:
-                        print(f"[+] Found username field with selector: {selector}")
+                        logger.debug(f"Found username field with selector: {selector}")
                         break
                 except:
                     continue
 
-            await self.page.screenshot(path="after_direkte_click.png")
-            print("[*] Screenshot saved to after_direkte_click.png")
+            await self.page.screenshot(path=debug_path("after_direkte_click.png"))
+            logger.debug(f"Screenshot saved to {debug_path('after_direkte_click.png')}")
 
             if not username_field:
                 raise Exception("Could not find username field")
 
             await username_field.fill(self.username)
-            print(f"[+] Filled username: {self.username}")
+            logger.info(f"Filled username: {self.username}")
 
             password_field = await self.page.wait_for_selector("input[name='password'], input[name='kodeord'], input[type='password']", timeout=5000)
             await password_field.fill(self.password)
-            print("[+] Filled password")
+            logger.info("Filled password")
 
             submit_button = await self.page.wait_for_selector("button[type='submit'], input[type='submit'], button:has-text('Log ind'), button:has-text('Login')", timeout=5000)
             await submit_button.click()
-            print("[+] Clicked submit button")
+            logger.info("Clicked submit button")
 
-            await self.page.wait_for_load_state("networkidle", timeout=10000)
+            # Wait for URL to change (login complete) then immediately navigate to schedule
+            await self.page.wait_for_url("**/skema/**", timeout=10000)
+            logger.info("Login successful!")
 
-            await self.page.screenshot(path="after_login.png")
-            print("[*] Screenshot saved to after_login.png")
+            # Navigate to schedule page immediately (don't wait for current page to finish)
+            logger.info("Navigating to schedule page...")
+            await self.page.goto("https://all.studieplus.dk/skema/")
+            logger.info("Now on schedule page")
 
-            current_url = self.page.url
-            if "login" not in current_url.lower():
-                print(f"[+] Login successful! Current URL: {current_url}")
-
-                # Navigate to schedule page
-                print("[*] Navigating to schedule page...")
-                await self.page.goto("https://all.studieplus.dk/skema/")
-                await self.page.wait_for_load_state("networkidle", timeout=10000)
-                print(f"[+] Now on schedule page: {self.page.url}")
-
-                self.logged_in = True
-                return True
-            else:
-                print(f"[-] Login may have failed. Still on: {current_url}")
-                return False
+            self.logged_in = True
+            return True
 
         except Exception as e:
-            print(f"[-] Login attempt error: {e}")
+            logger.error(f"Login attempt error: {e}")
             try:
-                await self.page.screenshot(path="error_page.png")
-                print("[*] Error screenshot saved to error_page.png")
+                await self.page.screenshot(path=debug_path("error_page.png"))
+                logger.debug(f"Error screenshot saved to {debug_path('error_page.png')}")
             except:
                 pass
             return False
@@ -141,12 +139,12 @@ class StudiePlusScraper:
     async def login(self) -> bool:
         """Login with automatic retry (max 3 attempts)."""
         if self.logged_in:
-            print("[*] Already logged in, skipping login")
+            logger.info("Already logged in, skipping login")
             return True
 
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            print(f"\n[*] Login attempt {attempt}/{max_attempts}")
+            logger.info(f"Login attempt {attempt}/{max_attempts}")
 
             success = await self._attempt_login()
 
@@ -154,10 +152,10 @@ class StudiePlusScraper:
                 return True
 
             if attempt < max_attempts:
-                print(f"[!] Login attempt {attempt} failed, retrying...")
+                logger.warning(f"Login attempt {attempt} failed, retrying...")
                 await asyncio.sleep(1)
             else:
-                print(f"[-] All {max_attempts} login attempts failed")
+                logger.error(f"All {max_attempts} login attempts failed")
                 return False
 
         return False
@@ -170,45 +168,42 @@ class StudiePlusScraper:
         if not login_success:
             raise Exception("Login failed")
 
-        print("\n[*] Looking for Assignments link in menu...")
+        logger.info("Navigating to assignments page...")
 
         try:
-            assignments_link = await self.page.wait_for_selector("a:has-text('Assignments'), a:has-text('Opgaver')", timeout=5000)
-            await assignments_link.click()
-            print("[+] Clicked Assignments link")
-
+            await self.page.goto("https://all.studieplus.dk/opgave/")
             await self.page.wait_for_load_state("networkidle")
-            await asyncio.sleep(0.5)
+            logger.info("On assignments page")
 
-            await self.page.screenshot(path="assignments_page.png")
-            print("[*] Screenshot saved to assignments_page.png")
+            await self.page.screenshot(path=debug_path("assignments_page.png"))
+            logger.debug(f"Screenshot saved to {debug_path('assignments_page.png')}")
 
             homework_data = await self._extract_homework_from_page()
 
             if homework_data:
                 return homework_data
 
-            print("\n[*] Extracting all visible text from assignments page...")
+            logger.info("Extracting all visible text from assignments page...")
             visible_text = await self.page.evaluate("""() => {
                 return document.body.innerText;
             }""")
 
-            with open("assignments_text.txt", "w", encoding="utf-8") as f:
+            with open(debug_path("assignments_text.txt"), "w", encoding="utf-8") as f:
                 f.write(visible_text)
-            print("[+] Saved assignments page text to assignments_text.txt")
+            logger.debug(f"Saved assignments page text to {debug_path('assignments_text.txt')}")
 
             content = await self.page.content()
-            with open("assignments_page.html", "w", encoding="utf-8") as f:
+            with open(debug_path("assignments_page.html"), "w", encoding="utf-8") as f:
                 f.write(content)
-            print("[+] Saved assignments HTML to assignments_page.html")
+            logger.debug(f"Saved assignments HTML to {debug_path('assignments_page.html')}")
 
             return []
 
         except Exception as e:
-            print(f"[-] Error accessing assignments: {e}")
+            logger.error(f"Error accessing assignments: {e}")
 
-            await self.page.screenshot(path="error_assignments.png")
-            print("[*] Error screenshot saved")
+            await self.page.screenshot(path=debug_path("error_assignments.png"))
+            logger.debug(f"Error screenshot saved to {debug_path('error_assignments.png')}")
 
             return []
 
@@ -216,9 +211,9 @@ class StudiePlusScraper:
         content = await self.page.content()
         soup = BeautifulSoup(content, 'html.parser')
 
-        with open("assignments_page.html", "w", encoding="utf-8") as f:
+        with open(debug_path("assignments_page.html"), "w", encoding="utf-8") as f:
             f.write(content)
-        print("[*] Saved assignments HTML")
+        logger.debug(f"Saved assignments HTML to {debug_path('assignments_page.html')}")
 
         homework_items = []
 
@@ -254,7 +249,7 @@ class StudiePlusScraper:
                         })
 
         if homework_items:
-            print(f"[+] Found {len(homework_items)} homework assignments")
+            logger.info(f"Found {len(homework_items)} homework assignments")
             return homework_items
 
         return []
@@ -267,35 +262,45 @@ class StudiePlusScraper:
         if not login_success:
             raise Exception("Login failed")
 
-        print(f"\n[*] Fetching assignment details for row {row_index}")
+        logger.info(f"Fetching assignment details for row {row_index}")
 
         try:
-            print("[*] Navigating to assignments page...")
-            assignments_link = await self.page.wait_for_selector("a:has-text('Assignments'), a:has-text('Opgaver')", timeout=5000)
-            await assignments_link.click()
-            await self.page.wait_for_load_state("networkidle")
-            await asyncio.sleep(0.5)
+            logger.info("Navigating to assignments page...")
+            await self.page.goto("https://all.studieplus.dk/opgave/")
 
-            print(f"[*] Looking for 'Detaljer' button in row {row_index}")
+            # Wait for table to load
+            await self.page.wait_for_selector('tr[__gwt_row]', timeout=15000)
+            logger.info("Table loaded")
+
+            # Debug: save HTML after table load
+            if os.getenv('DEBUG'):
+                content = await self.page.content()
+                with open(debug_path("assignment_details_page.html"), "w", encoding="utf-8") as f:
+                    f.write(content)
+                await self.page.screenshot(path=debug_path("assignment_details_page.png"))
+                logger.debug("Saved HTML and screenshot")
+
+            logger.info(f"Looking for 'Details' button in row {row_index}")
             details_button = await self.page.wait_for_selector(
-                f'tr[__gwt_row="{row_index}"] button:has-text("Detaljer")',
+                f'tr[__gwt_row="{row_index}"] button:has-text("Details")',
                 timeout=10000
             )
 
             if details_button:
                 await details_button.click()
-                print("[+] Clicked 'Detaljer' button")
+                logger.info("Clicked 'Detaljer' button")
 
-                await asyncio.sleep(1.5)
+                # Wait for details dialog to appear
+                await self.page.wait_for_load_state("networkidle")
 
                 iframe_description = ""
                 try:
                     iframe_locator = self.page.frame_locator('iframe.gwt-RichTextArea')
                     iframe_body = iframe_locator.locator('body')
                     iframe_description = await iframe_body.inner_text(timeout=3000)
-                    print(f"[+] Got description from iframe: {iframe_description[:100]}...")
+                    logger.debug(f"Got description from iframe: {iframe_description[:100]}...")
                 except Exception as e:
-                    print(f"[*] No iframe description found: {e}")
+                    logger.debug(f"No iframe description found: {e}")
 
                 content = await self.page.content()
                 soup = BeautifulSoup(content, 'html.parser')
@@ -315,36 +320,38 @@ class StudiePlusScraper:
                     'row_index': row_index
                 }
 
+                # Parse table rows - handle both Danish and English labels
                 table_rows = soup.find_all('tr')
                 for row in table_rows:
                     cells = row.find_all('td')
                     if len(cells) == 2:
-                        label = cells[0].get_text(strip=True)
+                        label = cells[0].get_text(strip=True).lower()
                         value = cells[1].get_text(strip=True)
 
-                        if 'Opgavetitel' in label:
+                        if 'opgavetitel' in label or 'assignment title' in label:
                             result['assignment_title'] = value
-                        elif 'Fag/hold' in label:
+                        elif 'fag/hold' in label or 'subject' in label:
                             result['subject'] = value
-                        elif 'Fordybelsestid' in label:
+                        elif 'fordybelsestid' in label or 'student time' in label:
                             result['student_time'] = value
-                        elif 'Ansvarlig' in label:
+                        elif 'ansvarlig' in label or 'responsible' in label:
                             result['responsible'] = value
-                        elif 'Forløb' in label:
+                        elif 'forløb' in label or 'course' in label:
                             result['course'] = value
-                        elif 'Bedømmelsesform' in label:
+                        elif 'bedømmelsesform' in label or 'evaluation' in label:
                             result['evaluation_form'] = value
-                        elif 'Grupper' in label:
+                        elif 'grupper' in label or 'groups' in label:
                             result['groups'] = value
 
+                # Parse submission status - handle both Danish and English
                 status_divs = soup.find_all('div', class_='gwt-Label')
                 for div in status_divs:
-                    text = div.get_text(strip=True)
-                    if 'Afleveringsstatus' in text:
+                    text = div.get_text(strip=True).lower()
+                    if 'afleveringsstatus' in text or 'submission status' in text:
                         next_elem = div.find_next('h3')
                         if next_elem:
                             result['submission_status'] = next_elem.get_text(strip=True)
-                    elif 'Afleveringsfrist' in text:
+                    elif 'afleveringsfrist' in text or 'submission deadline' in text:
                         next_elem = div.find_next('div', class_='gwt-Label')
                         if next_elem and ':' in next_elem.get_text():
                             result['deadline'] = next_elem.get_text(strip=True)
@@ -355,40 +362,59 @@ class StudiePlusScraper:
                     desc_headers = soup.find_all('h4')
                     description_parts = []
                     for header in desc_headers:
-                        header_text = header.get_text(strip=True)
-                        if 'Opgaveformulering' in header_text:
+                        header_text = header.get_text(strip=True).lower()
+                        # Handle both Danish and English
+                        if 'opgaveformulering' in header_text or 'assignment description' in header_text:
                             next_sibling = header.find_next_sibling()
                             if next_sibling:
                                 desc_text = next_sibling.get_text(strip=True)
-                                if desc_text and desc_text != 'Ingen filer' and len(desc_text) > 5:
+                                no_files_texts = ['ingen filer', 'no files']
+                                if desc_text and not any(nf in desc_text.lower() for nf in no_files_texts) and len(desc_text) > 5:
                                     description_parts.append(desc_text)
 
                     if description_parts:
                         result['description'] = '\n\n'.join(description_parts)
 
+                # Extract files - look for anchor elements with file names in title or text
+                file_anchors = soup.find_all('a', class_='gwt-Anchor')
+                for link in file_anchors:
+                    # Get file name from title attribute or text
+                    file_name = link.get('title', '') or link.get_text(strip=True)
+                    href = link.get('href', '')
+
+                    # Check if it's a file (has file extension)
+                    file_extensions = ('.pdf', '.docx', '.xlsx', '.pptx', '.zip', '.doc', '.txt', '.jpg', '.png', '.gif')
+                    if file_name and any(file_name.lower().endswith(ext) for ext in file_extensions):
+                        result['files'].append({
+                            'name': file_name,
+                            'url': href if href and not href.startswith('javascript:') else ''
+                        })
+
+                # Also check for traditional file links with href
                 file_links = soup.find_all('a', href=True)
                 for link in file_links:
                     href = link.get('href', '')
                     link_text = link.get_text(strip=True)
-                    if (('/filer/' in href or '/bilag/' in href or
-                         href.endswith(('.pdf', '.docx', '.xlsx', '.pptx', '.zip', '.doc', '.txt')))
-                        and link_text and len(link_text) > 2):
-                        result['files'].append({
-                            'name': link_text,
-                            'url': href
-                        })
+                    if (('/filer/' in href or '/bilag/' in href or '/files/' in href) and
+                        link_text and len(link_text) > 2):
+                        # Avoid duplicates
+                        if not any(f['name'] == link_text for f in result['files']):
+                            result['files'].append({
+                                'name': link_text,
+                                'url': href
+                            })
 
-                await self.page.screenshot(path="assignment_details.png")
-                print("[*] Screenshot saved to assignment_details.png")
+                await self.page.screenshot(path=debug_path("assignment_details.png"))
+                logger.debug(f"Screenshot saved to {debug_path('assignment_details.png')}")
 
-                with open("assignment_details.html", "w", encoding="utf-8") as f:
+                with open(debug_path("assignment_details.html"), "w", encoding="utf-8") as f:
                     f.write(content)
-                print("[*] Saved assignment HTML to assignment_details.html")
+                logger.debug(f"Saved assignment HTML to {debug_path('assignment_details.html')}")
 
                 return result
 
         except Exception as e:
-            print(f"[-] Error fetching assignment details: {e}")
+            logger.error(f"Error fetching assignment details: {e}")
             import traceback
             traceback.print_exc()
             return {
@@ -415,10 +441,10 @@ class StudiePlusScraper:
         if not login_success:
             raise Exception("Login failed")
 
-        print("\n[*] Parsing schedule homework from SVG...")
+        logger.info("Parsing schedule homework from SVG...")
 
         # Wait for SVG to load
-        await asyncio.sleep(2)
+        await self.page.wait_for_selector('svg g.CAHE1CD-h-b', timeout=10000)
 
         # Get HTML content
         content = await self.page.content()
@@ -426,7 +452,7 @@ class StudiePlusScraper:
 
         # Find all lesson SVG groups
         lesson_groups = soup.find_all('g', class_='CAHE1CD-h-b')
-        print(f"[+] Found {len(lesson_groups)} lessons in schedule")
+        logger.info(f"Found {len(lesson_groups)} lessons in schedule")
 
         homework_list = []
 
@@ -512,12 +538,13 @@ class StudiePlusScraper:
                     'note': note_text
                 })
 
-        print(f"[+] Found {len(homework_list)} lessons with homework/notes")
+        logger.info(f"Found {len(homework_list)} lessons with homework/notes")
         return homework_list
 
     def parse_week_dates(self, soup: BeautifulSoup) -> tuple[List[str], str, str]:
         """
         Extract dates, week number, and year from schedule HTML.
+        Supports both Danish and English language settings.
 
         Args:
             soup: BeautifulSoup object of schedule page
@@ -528,15 +555,18 @@ class StudiePlusScraper:
             - week_number: Week number as string ("46")
             - year: Year as string ("2025")
         """
-        weekdays = ["Man", "Tir", "Ons", "Tor", "Fre", "Lør", "Søn"]
+        # Support both Danish and English weekday abbreviations
+        weekdays_da = ["Man", "Tir", "Ons", "Tor", "Fre", "Lør", "Søn"]
+        weekdays_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekdays = weekdays_da + weekdays_en
         dates = []
 
-        # Find week info from buttons (new format)
+        # Find week info from buttons (supports both "Uge X - YYYY" and "Week X - YYYY")
         week_info = None
         buttons = soup.find_all('button')
         for btn in buttons:
             text = btn.get_text(strip=True)
-            if "Uge" in text and "-" in text:
+            if ("Uge" in text or "Week" in text) and "-" in text:
                 week_info = text
                 break
 
@@ -545,14 +575,15 @@ class StudiePlusScraper:
             date_labels = soup.find_all('div', class_='gwt-Label')
             for label in date_labels:
                 text = label.get_text(strip=True)
-                if "Uge" in text and "-" in text:
+                if ("Uge" in text or "Week" in text) and "-" in text:
                     week_info = text
                     break
 
         if not week_info:
             raise Exception("Could not find week information in schedule")
 
-        week_match = re.search(r'Uge (\d+) - (\d{4})', week_info)
+        # Match both "Uge X - YYYY" and "Week X - YYYY"
+        week_match = re.search(r'(?:Uge|Week)\s*(\d+)\s*-\s*(\d{4})', week_info)
         if not week_match:
             raise Exception(f"Could not parse week info: {week_info}")
 
@@ -579,13 +610,14 @@ class StudiePlusScraper:
 
         return (dates, week_number, year)
 
-    def calculate_lesson_date(self, transform: str, week_dates: List[str]) -> tuple[str, str]:
+    def calculate_lesson_date(self, transform: str, week_dates: List[str], column_width: int = 138) -> tuple[str, str]:
         """
         Calculate lesson date and weekday from SVG transform position.
 
         Args:
-            transform: SVG transform attribute (e.g., "translate(197, 600) rotate(0)")
+            transform: SVG transform attribute (e.g., "translate(138, 600) rotate(0)")
             week_dates: List of 7 ISO dates for the week
+            column_width: Width of each day column in pixels (default 138 for 7-day view)
 
         Returns:
             Tuple of (iso_date, weekday_name)
@@ -598,7 +630,7 @@ class StudiePlusScraper:
 
         x_pos = int(match.group(1))
 
-        day_index = x_pos // 197
+        day_index = x_pos // column_width
 
         if day_index >= len(week_dates):
             day_index = len(week_dates) - 1
@@ -627,7 +659,7 @@ class StudiePlusScraper:
                 await self.page.click(button_selector)
                 await self.page.wait_for_load_state('networkidle', timeout=3000)
             except Exception as e:
-                print(f"[!] Warning: Could not navigate week: {e}")
+                logger.warning(f"Could not navigate week: {e}")
                 break
 
     async def parse_schedule(self, week_offset: int = 0) -> tuple[List[Dict], str, str, List[str]]:
@@ -656,13 +688,44 @@ class StudiePlusScraper:
         content = await self.page.content()
         soup = BeautifulSoup(content, 'html.parser')
 
+        debug = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
+        if debug:
+            with open(debug_path("schedule_page.html"), "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.debug(f"Saved schedule HTML to {debug_path('schedule_page.html')}")
+
         week_dates, week_number, year = self.parse_week_dates(soup)
+
+        if debug:
+            logger.debug(f"Parsed week dates: {week_dates}")
+            logger.debug(f"Week {week_number}, Year {year}")
 
         # Find day containers (one per weekday)
         day_containers = soup.find_all('g', class_='DagMedBrikker')
-        print(f"[+] Found {len(day_containers)} day containers")
+        logger.info(f"Found {len(day_containers)} day containers")
+
+        # Calculate column width dynamically by collecting all x positions
+        x_positions = []
+        for day_container in day_containers:
+            container_transform = day_container.get('transform', '')
+            match = re.search(r'translate\((\d+),\s*(\d+)\)', container_transform)
+            if match:
+                x_positions.append(int(match.group(1)))
+
+        x_positions = sorted(set(x_positions))
+
+        # Calculate column width from x positions (difference between consecutive unique positions)
+        if len(x_positions) >= 2:
+            column_width = x_positions[1] - x_positions[0]
+        else:
+            column_width = 138  # Default for 7-day view
+
+        if debug:
+            logger.debug(f"X positions: {x_positions}")
+            logger.debug(f"Calculated column width: {column_width}px")
 
         lessons = []
+        weekday_names = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
 
         for day_container in day_containers:
             # Get day from container's transform
@@ -676,13 +739,17 @@ class StudiePlusScraper:
                 continue
 
             x_pos = int(match.group(1))
-            day_index = x_pos // 197  # 197 pixels per day column
+            day_index = x_pos // column_width  # Dynamic column width
+
+            if debug:
+                logger.debug(f"Day container: x_pos={x_pos}, day_index={day_index}, weekday={weekday_names[day_index] if day_index < len(weekday_names) else 'Unknown'}")
 
             if day_index >= len(week_dates):
                 continue
 
             lesson_date = week_dates[day_index]
-            weekday_names = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
+            if debug:
+                logger.debug(f"Assigned date: {lesson_date}")
             weekday = weekday_names[day_index] if day_index < len(weekday_names) else "Unknown"
 
             # Find all lessons in this day container
@@ -709,13 +776,18 @@ class StudiePlusScraper:
                 teacher = ""
 
                 for text_elem in texts:
-                    text_content = text_elem.get_text(strip=True)
+                    # Get only direct text content, excluding nested <title> (tooltips)
+                    # Use .string or .strings to get only direct text, not child elements
+                    direct_text = ''.join(text_elem.find_all(string=True, recursive=False)).strip()
+                    text_content = direct_text if direct_text else ""
 
                     if re.match(r'\d{2}:\d{2}-\d{2}:\d{2}', text_content):
                         time = text_content
 
-                    if text_elem.get('style', '') and 'font-weight: bold' in text_elem.get('style'):
-                        if ':' not in text_content:
+                    # Subject is bold text with font-size 12px (not the time which is 10px)
+                    style = text_elem.get('style', '')
+                    if 'font-weight: bold' in style and 'font-size: 12px' in style:
+                        if ':' not in text_content and len(text_content) > 1:
                             subject = text_content
 
                     if len(text_content) > 2 and len(text_content) < 20:
@@ -769,7 +841,7 @@ class StudiePlusScraper:
                     'has_files': has_files
                 })
 
-        print(f"[+] Parsed {len(lessons)} valid lessons")
+        logger.info(f"Parsed {len(lessons)} valid lessons")
         return (lessons, week_number, year, week_dates)
 
     async def get_lesson_details(self, date: str, time: str) -> Dict:
@@ -800,35 +872,83 @@ class StudiePlusScraper:
 
         await self.navigate_to_week(week_offset)
 
+        # Wait for SVG schedule to load before parsing
+        await self.page.wait_for_selector('svg g.CAHE1CD-h-b', timeout=10000)
+
         content = await self.page.content()
         soup = BeautifulSoup(content, 'html.parser')
 
         week_dates, week_number, year = self.parse_week_dates(soup)
 
-        lesson_groups = soup.find_all('g', class_='CAHE1CD-h-b')
+        # Calculate column width dynamically from day containers
+        day_containers = soup.find_all('g', class_='DagMedBrikker')
+        x_positions = []
+        for day_container in day_containers:
+            container_transform = day_container.get('transform', '')
+            match = re.search(r'translate\((\d+),\s*(\d+)\)', container_transform)
+            if match:
+                x_positions.append(int(match.group(1)))
+        x_positions = sorted(set(x_positions))
+        column_width = x_positions[1] - x_positions[0] if len(x_positions) >= 2 else 138
+
+        weekday_names = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
+
+        if os.getenv('DEBUG'):
+            logger.debug(f"Looking for lesson at date={date} time={time}")
+            logger.debug(f"Week dates from schedule: {week_dates}")
+            logger.debug(f"Found {len(day_containers)} day containers")
 
         target_lesson = None
-        for lesson in lesson_groups:
-            transform = lesson.get('transform', '')
-            if not transform:
+
+        # Iterate through day containers (same approach as parse_schedule)
+        for day_container in day_containers:
+            container_transform = day_container.get('transform', '')
+            if not container_transform:
                 continue
 
-            lesson_date, weekday = self.calculate_lesson_date(transform, week_dates)
+            match = re.search(r'translate\((\d+),\s*(\d+)\)', container_transform)
+            if not match:
+                continue
 
+            x_pos = int(match.group(1))
+            day_index = x_pos // column_width
+
+            if day_index >= len(week_dates):
+                continue
+
+            lesson_date = week_dates[day_index]
+            weekday = weekday_names[day_index] if day_index < len(weekday_names) else "Unknown"
+
+            # Skip if this isn't the target date
             if lesson_date != date:
                 continue
 
-            texts = lesson.find_all('text')
-            lesson_time = ""
+            if os.getenv('DEBUG'):
+                logger.debug(f"Found day container for target date: {lesson_date}")
 
-            for text_elem in texts:
-                text_content = text_elem.get_text(strip=True)
-                if re.match(r'\d{2}:\d{2}-\d{2}:\d{2}', text_content):
-                    lesson_time = text_content
+            # Find lessons within this day container
+            lesson_groups = day_container.find_all('g', class_='CAHE1CD-h-b')
+
+            for lesson in lesson_groups:
+                texts = lesson.find_all('text')
+                lesson_time = ""
+
+                for text_elem in texts:
+                    # Get only direct text content, excluding nested <title> (tooltips)
+                    direct_text = ''.join(text_elem.find_all(string=True, recursive=False)).strip()
+                    text_content = direct_text if direct_text else ""
+                    if re.match(r'\d{2}:\d{2}-\d{2}:\d{2}', text_content):
+                        lesson_time = text_content
+                        break
+
+                if os.getenv('DEBUG'):
+                    logger.debug(f"Found lesson with time: {lesson_time}")
+
+                if lesson_time == time:
+                    target_lesson = lesson
                     break
 
-            if lesson_time == time:
-                target_lesson = lesson
+            if target_lesson:
                 break
 
         if not target_lesson:
@@ -856,10 +976,15 @@ class StudiePlusScraper:
         has_files = False
 
         for text_elem in texts:
-            text_content = text_elem.get_text(strip=True)
+            # Get only direct text content, excluding nested <title> (tooltips)
+            direct_text = ''.join(text_elem.find_all(string=True, recursive=False)).strip()
+            text_content = direct_text if direct_text else ""
 
-            if text_elem.get('style', '') and 'font-weight: bold' in text_elem.get('style'):
-                if ':' not in text_content:
+            style = text_elem.get('style', '')
+
+            # Subject is bold text with font-size 12px (not 13px which is the absence marker)
+            if 'font-weight: bold' in style and 'font-size: 12px' in style:
+                if ':' not in text_content and len(text_content) > 1:
                     subject = text_content
 
             if len(text_content) > 2 and len(text_content) < 20:
@@ -888,36 +1013,200 @@ class StudiePlusScraper:
         lesson_id = f"{date}_{time.split('-')[0]}"
 
         files = []
-        if has_files:
-            try:
-                bbox = target_lesson.find('rect').get('transform', '')
-                if bbox:
-                    match = re.search(r'translate\((\d+),\s*(\d+)\)', bbox)
-                    if match:
-                        x, y = int(match.group(1)), int(match.group(2))
-                        await self.page.mouse.click(x + 50, y + 20, force=True)
-                        await self.page.wait_for_load_state('domcontentloaded', timeout=2000)
+        popup_homework = ""
+        popup_note = ""
 
-                        await self.page.keyboard.press('Control+Alt+N')
-                        await self.page.wait_for_load_state('domcontentloaded', timeout=2000)
+        # Always try to open popup to get full details (better formatting, links, files)
+        try:
+            # Get the lesson's position within the day container
+            lesson_transform = target_lesson.get('transform', '')
+            lesson_match = re.search(r'translate\((\d+),\s*(\d+)\)', lesson_transform)
 
-                        panel_content = await self.page.content()
-                        panel_soup = BeautifulSoup(panel_content, 'html.parser')
+            if lesson_match:
+                lesson_local_x, lesson_y = int(lesson_match.group(1)), int(lesson_match.group(2))
+                day_container_x = day_index * column_width
 
-                        file_links = panel_soup.find_all('a', href=True)
-                        for link in file_links:
-                            href = link.get('href', '')
-                            if 'download' in href or 'file' in href.lower():
-                                file_name = link.get_text(strip=True)
-                                if file_name:
-                                    files.append({
-                                        'name': file_name,
-                                        'url': href if href.startswith('http') else f"https://all.studieplus.dk{href}"
-                                    })
+                if os.getenv('DEBUG'):
+                    logger.debug(f"Target lesson at day_x={day_container_x}, y={lesson_y}")
 
-                        await self.page.keyboard.press('Escape')
-            except Exception as e:
-                print(f"[!] Warning: Could not extract files: {e}")
+                # Find SVG and scroll into view
+                svg_elem = await self.page.query_selector('svg[viewBox]')
+                if svg_elem:
+                    await svg_elem.scroll_into_view_if_needed()
+
+                    svg_box = await svg_elem.bounding_box()
+                    if svg_box:
+                        # Calculate click position: SVG position + day container x + lesson offset
+                        click_x = svg_box['x'] + day_container_x + lesson_local_x + 50
+                        click_y = svg_box['y'] + lesson_y + 20
+
+                        if os.getenv('DEBUG'):
+                            logger.debug(f"SVG box: ({svg_box['x']:.0f}, {svg_box['y']:.0f})")
+                            logger.debug(f"Clicking on lesson at ({click_x:.0f}, {click_y:.0f})")
+
+                        await self.page.mouse.click(click_x, click_y)
+
+                        # Press Ctrl+Alt+N to open the note/homework popup
+                        if os.getenv('DEBUG'):
+                            logger.debug("Pressing Ctrl+Alt+N to open popup...")
+                        await self.page.keyboard.press('Control+Alt+n')
+
+                        # Wait for popup to appear
+                        await self.page.wait_for_selector('.udialog', state='attached', timeout=5000)
+
+                        # Take screenshot for debugging
+                        if os.getenv('DEBUG'):
+                            debug_screenshot = os.path.join(os.path.dirname(__file__), '..', '..', 'debug', 'after_ctrl_alt_n.png')
+                            await self.page.screenshot(path=debug_screenshot)
+                            logger.debug(f"Screenshot saved to {debug_screenshot}")
+
+                        # Extract popup content
+                        try:
+
+                            if os.getenv('DEBUG'):
+                                logger.debug("Extracting popup content...")
+
+                            popup_content = await self.page.content()
+                            popup_soup = BeautifulSoup(popup_content, 'html.parser')
+
+                            # Save popup HTML for debugging
+                            if os.getenv('DEBUG'):
+                                debug_html = os.path.join(os.path.dirname(__file__), '..', '..', 'debug', 'lesson_popup.html')
+                                with open(debug_html, 'w', encoding='utf-8') as f:
+                                    f.write(popup_content)
+                                logger.debug(f"Saved popup HTML to {debug_html}")
+
+                            # Find the dialog box - StudiePlus uses "udialog" class
+                            dialog = (
+                                popup_soup.find('div', class_='udialog') or
+                                popup_soup.find('div', class_='gwt-DialogBox') or
+                                popup_soup.find('div', class_='gwt-PopupPanel')
+                            )
+
+                            if os.getenv('DEBUG'):
+                                logger.debug(f"Dialog found: {bool(dialog)}")
+
+                            if dialog:
+                                # StudiePlus popup uses control-group divs with control-label and controls
+                                control_groups = dialog.find_all('div', class_='control-group')
+
+                                for group in control_groups:
+                                    label_elem = group.find('label', class_='control-label')
+                                    controls_elem = group.find('div', class_='controls')
+
+                                    if label_elem and controls_elem:
+                                        label_text = label_elem.get_text(strip=True).lower()
+
+                                        if 'homework' in label_text or 'lektier' in label_text:
+                                            popup_homework = controls_elem.get_text(separator=' ', strip=True)
+                                            # Clean up any escaped HTML tags in the text
+                                            popup_homework = re.sub(r'<[^>]+>', '', popup_homework)
+                                            popup_homework = re.sub(r'\s+', ' ', popup_homework).strip()
+
+                                            if os.getenv('DEBUG'):
+                                                logger.debug(f"Found homework: {popup_homework[:100]}...")
+
+                                        elif label_text == 'note' or label_text == 'noter':
+                                            popup_note = controls_elem.get_text(separator=' ', strip=True)
+                                            # Clean up any escaped HTML tags in the text
+                                            popup_note = re.sub(r'<[^>]+>', '', popup_note)
+                                            popup_note = re.sub(r'\s+', ' ', popup_note).strip()
+
+                                            if os.getenv('DEBUG'):
+                                                logger.debug(f"Found note: {popup_note[:100] if popup_note else 'empty'}...")
+
+                                        elif 'filer' in label_text or 'files' in label_text:
+                                            file_links = controls_elem.find_all('a', href=True)
+                                            for link in file_links:
+                                                href = link.get('href', '')
+                                                file_name = link.get_text(strip=True)
+                                                if file_name and href and not href.startswith('javascript:'):
+                                                    full_url = href if href.startswith('http') else f"https://all.studieplus.dk{href}"
+                                                    files.append({
+                                                        'name': file_name,
+                                                        'url': full_url
+                                                    })
+                                            if os.getenv('DEBUG'):
+                                                logger.debug(f"Found {len(files)} files")
+
+                            # Extract URLs from links by clicking them and capturing navigation
+                            extracted_links = []
+                            try:
+                                # Use locator for more robust element handling
+                                link_locator = self.page.locator('.udialog a.gwt-Anchor')
+                                link_count = await link_locator.count()
+
+                                if os.getenv('DEBUG'):
+                                    logger.debug(f"Found {link_count} link elements in popup")
+
+                                for i in range(link_count):
+                                    try:
+                                        # Get fresh reference to the nth link
+                                        link = link_locator.nth(i)
+                                        link_text = await link.inner_text()
+                                        link_text = re.sub(r'<[^>]+>', '', link_text).strip()
+
+                                        if not link_text or len(link_text) < 3:
+                                            continue
+
+                                        if os.getenv('DEBUG'):
+                                            logger.debug(f"Clicking link {i}: '{link_text}'")
+
+                                        # Try to capture new page (popup window)
+                                        try:
+                                            async with self.page.context.expect_page(timeout=2000) as new_page_info:
+                                                await link.click()
+
+                                            new_page = await new_page_info.value
+                                            await new_page.wait_for_load_state('domcontentloaded', timeout=3000)
+                                            actual_url = new_page.url
+
+                                            if os.getenv('DEBUG'):
+                                                logger.debug(f"Link '{link_text}' opened new tab -> {actual_url}")
+
+                                            extracted_links.append({
+                                                'text': link_text,
+                                                'url': actual_url
+                                            })
+
+                                            await new_page.close()
+
+                                        except Exception as e:
+                                            if os.getenv('DEBUG'):
+                                                logger.debug(f"No new page opened for link: {e}")
+
+                                    except Exception as link_err:
+                                        if os.getenv('DEBUG'):
+                                            logger.debug(f"Could not extract URL for link {i}: {link_err}")
+
+                            except Exception as links_err:
+                                if os.getenv('DEBUG'):
+                                    logger.debug(f"Error extracting links: {links_err}")
+
+                            # Add extracted links to homework/note text
+                            if extracted_links:
+                                links_str = "\n\nLinks:\n" + "\n".join(
+                                    f"- {link['text']}: {link['url']}" for link in extracted_links
+                                )
+                                if popup_homework:
+                                    popup_homework += links_str
+                                elif popup_note:
+                                    popup_note += links_str
+
+                            # Close the popup by pressing Escape
+                            await self.page.keyboard.press('Escape')
+
+                        except Exception as popup_err:
+                            if os.getenv('DEBUG'):
+                                logger.debug(f"Could not open/parse popup: {popup_err}")
+
+        except Exception as e:
+            if os.getenv('DEBUG'):
+                logger.debug(f"Error extracting popup details: {e}")
+
+        # Use popup content if available, otherwise fall back to SVG tooltip content
+        final_homework = popup_homework if popup_homework else homework_text
+        final_note = popup_note if popup_note else note_text
 
         return {
             'id': lesson_id,
@@ -927,11 +1216,11 @@ class StudiePlusScraper:
             'subject': subject,
             'teacher': teacher,
             'room': room,
-            'has_homework': bool(homework_text),
-            'has_note': bool(note_text),
-            'has_files': has_files,
-            'homework': homework_text,
-            'note': note_text,
+            'has_homework': bool(final_homework),
+            'has_note': bool(final_note),
+            'has_files': len(files) > 0 or has_files,
+            'homework': final_homework,
+            'note': final_note,
             'files': files
         }
 
@@ -1058,27 +1347,22 @@ class StudiePlusScraper:
 
 async def main():
     async with StudiePlusScraper() as scraper:
-        print("[*] Starting Studie+ scraper...")
-        print(f"[*] School: {scraper.school}")
-        print(f"[*] Username: {scraper.username}")
+        logger.info("Starting Studie+ scraper...")
+        logger.info(f"School: {scraper.school}")
+        logger.info(f"Username: {scraper.username}")
 
         homework = await scraper.get_homework()
 
         if homework:
-            print(f"\n\n{'='*60}")
-            print(f"HOMEWORK ASSIGNMENTS ({len(homework)} found)")
-            print(f"{'='*60}\n")
+            logger.info(f"HOMEWORK ASSIGNMENTS ({len(homework)} found)")
 
             for i, item in enumerate(homework, 1):
-                print(f"{i}. {item.get('subject', 'N/A')} - {item.get('title', 'N/A')}")
-                print(f"   Deadline: {item.get('deadline', 'N/A')}")
-                print(f"   Class: {item.get('class', 'N/A')} | Week: {item.get('week', 'N/A')}")
-                print(f"   Subject budget: {item.get('subject_budget_hours', 'N/A')} hours | Hours spent on assignment: {item.get('hours_spent', 'N/A')}")
-                print()
-
-            print(f"{'='*60}\n")
+                logger.info(f"{i}. {item.get('subject', 'N/A')} - {item.get('title', 'N/A')}")
+                logger.info(f"   Deadline: {item.get('deadline', 'N/A')}")
+                logger.info(f"   Class: {item.get('class', 'N/A')} | Week: {item.get('week', 'N/A')}")
+                logger.info(f"   Subject budget: {item.get('subject_budget_hours', 'N/A')} hours | Hours spent on assignment: {item.get('hours_spent', 'N/A')}")
         else:
-            print("\n[!] No homework found.")
+            logger.warning("No homework found.")
 
 
 if __name__ == "__main__":

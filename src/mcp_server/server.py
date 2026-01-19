@@ -60,6 +60,28 @@ def format_date_string(date_str: str, include_time: bool = False) -> str:
         return date_str
 
 
+def clean_for_llm(data: dict | list) -> dict | list:
+    """
+    Remove false boolean fields and empty strings from data to reduce LLM token usage.
+    Recursively cleans nested dicts and lists.
+    """
+    if isinstance(data, dict):
+        cleaned = {}
+        for key, value in data.items():
+            # Skip false booleans and empty strings
+            if value is False or value == "":
+                continue
+            # Recursively clean nested structures
+            if isinstance(value, (dict, list)):
+                cleaned[key] = clean_for_llm(value)
+            else:
+                cleaned[key] = value
+        return cleaned
+    elif isinstance(data, list):
+        return [clean_for_llm(item) if isinstance(item, (dict, list)) else item for item in data]
+    return data
+
+
 # ==================== ASSIGNMENTS (Afleveringer fra Opgaver-siden) ====================
 
 @mcp.tool()
@@ -161,7 +183,7 @@ async def get_assignment_details(row_index: str) -> dict:
 @mcp.tool()
 async def get_schedule(week_offset: int = 0) -> dict:
     """
-    Get complete weekly schedule with all lessons, dates, and metadata.
+    Get complete weekly schedule with all lessons grouped by day.
 
     Note: For most use cases, prefer get_homework_overview() or get_notes() which automatically
     handle multiple weeks. This function is useful when you need the full schedule for a specific week.
@@ -171,22 +193,21 @@ async def get_schedule(week_offset: int = 0) -> dict:
 
     Returns a dictionary with:
     - current_time: Current date and time for Claude's context
-    - week: Week number (e.g., "46")
-    - year: Year (e.g., "2025")
-    - dates: List of ISO dates for the week
-    - lessons: List of all lessons with date, time, subject, teacher, room, and flags for homework/notes/files
+    - week: Week number and year (e.g., "48/2025")
+    - schedule: List of days, each with date, day name, and lessons
     """
     result = await api.get_full_schedule(week_offset=week_offset)
 
     # Add current time context for Claude
     result['current_time'] = format_datetime_for_claude()
 
-    # Format dates in all lessons
-    for lesson in result.get('lessons', []):
-        if lesson.get('date'):
-            lesson['date'] = format_date_string(lesson['date'], include_time=False)
+    # Format dates in all days
+    for day in result.get('schedule', []):
+        if day.get('date'):
+            day['date'] = format_date_string(day['date'], include_time=False)
 
-    return result
+    # Clean up false booleans and empty strings for LLM readability
+    return clean_for_llm(result)
 
 
 @mcp.tool()
@@ -223,7 +244,8 @@ async def get_homework_overview(days_ahead: int = 7) -> dict:
         if lesson.get('date'):
             lesson['date'] = format_date_string(lesson['date'], include_time=False)
 
-    return result
+    # Clean up false booleans and empty strings for LLM readability
+    return clean_for_llm(result)
 
 
 @mcp.tool()
@@ -259,7 +281,8 @@ async def get_notes(days_ahead: int = 7) -> dict:
         if lesson.get('date'):
             lesson['date'] = format_date_string(lesson['date'], include_time=False)
 
-    return result
+    # Clean up false booleans and empty strings for LLM readability
+    return clean_for_llm(result)
 
 
 @mcp.tool()
@@ -282,7 +305,8 @@ async def get_lesson_details(date: str, time: str) -> dict:
     if result.get('date'):
         result['date'] = format_date_string(result['date'], include_time=False)
 
-    return result
+    # Clean up false booleans and empty strings for LLM readability
+    return clean_for_llm(result)
 
 
 @mcp.tool()
@@ -356,13 +380,8 @@ async def get_schedule_homework() -> dict:
     - lessons: List of lessons with homework or notes
     - count: Total number of lessons with content
     """
-    async with StudiePlusScraper() as scraper:
-        schedule_homework = await scraper.get_schedule_homework()
-
-        return {
-            "count": len(schedule_homework),
-            "lessons": schedule_homework
-        }
+    # Redirect to the new API-based function
+    return await get_homework_overview(days_ahead=7)
 
 
 if __name__ == "__main__":

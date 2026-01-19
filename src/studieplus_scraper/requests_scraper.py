@@ -3,6 +3,8 @@ from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
 import os
 from dotenv import load_dotenv
+from .scraper import debug_path
+from .logger import logger
 
 load_dotenv()
 
@@ -19,7 +21,7 @@ class StudiePlusRequestsScraper:
         self.base_url = "https://all.studieplus.dk"
 
     def _find_school_instnr(self) -> Optional[str]:
-        print(f"[*] Looking up school: {self.school}")
+        logger.info(f"Looking up school: {self.school}")
 
         response = self.session.get(f"{self.base_url}/")
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -39,15 +41,15 @@ class StudiePlusRequestsScraper:
 
                     for school in schools:
                         if school.get('navn') == self.school:
-                            print(f"[+] Found school with instnr: {school['instnr']}")
+                            logger.info(f"Found school with instnr: {school['instnr']}")
                             return school['instnr']
 
-        print(f"[-] Could not find school: {self.school}")
+        logger.error(f"Could not find school: {self.school}")
         return None
 
     def login(self) -> bool:
         try:
-            print("[*] Logging in to Studie+...")
+            logger.info("Logging in to Studie+...")
 
             instnr = self._find_school_instnr()
             if not instnr:
@@ -70,32 +72,32 @@ class StudiePlusRequestsScraper:
             )
 
             if 'skema' in response.url or 'forside' in response.url:
-                print(f"[+] Login successful! Redirected to: {response.url}")
+                logger.info(f"Login successful! Redirected to: {response.url}")
                 return True
             else:
-                print(f"[-] Login failed. Current URL: {response.url}")
+                logger.error(f"Login failed. Current URL: {response.url}")
                 return False
 
         except Exception as e:
-            print(f"[-] Login error: {e}")
+            logger.error(f"Login error: {e}")
             return False
 
     def get_homework(self) -> List[Dict]:
         if not self.login():
             raise Exception("Login failed")
 
-        print("\n[*] Fetching homework assignments...")
+        logger.info("Fetching homework assignments...")
 
         try:
             response = self.session.get(f"{self.base_url}/opgave/?id=id_menu_opgaver")
 
             if response.status_code != 200:
-                print(f"[-] Failed to fetch assignments page: {response.status_code}")
+                logger.error(f"Failed to fetch assignments page: {response.status_code}")
                 return []
 
-            with open("opgave_page.html", "w", encoding="utf-8") as f:
+            with open(debug_path("opgave_page.html"), "w", encoding="utf-8") as f:
                 f.write(response.text)
-            print("[*] Saved HTML to opgave_page.html")
+            logger.debug(f"Saved HTML to {debug_path('opgave_page.html')}")
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -129,41 +131,36 @@ class StudiePlusRequestsScraper:
                             })
 
             if homework_items:
-                print(f"[+] Found {len(homework_items)} homework assignments")
+                logger.info(f"Found {len(homework_items)} homework assignments")
                 return homework_items
 
-            print("[-] No homework found")
+            logger.warning("No homework found")
             return []
 
         except Exception as e:
-            print(f"[-] Error fetching homework: {e}")
+            logger.error(f"Error fetching homework: {e}")
             return []
 
 
 def main():
     scraper = StudiePlusRequestsScraper()
 
-    print("[*] Starting Studie+ requests scraper (fast mode)...")
-    print(f"[*] School: {scraper.school}")
-    print(f"[*] Username: {scraper.username}")
+    logger.info("Starting Studie+ requests scraper (fast mode)...")
+    logger.info(f"School: {scraper.school}")
+    logger.info(f"Username: {scraper.username}")
 
     homework = scraper.get_homework()
 
     if homework:
-        print(f"\n\n{'='*60}")
-        print(f"HOMEWORK ASSIGNMENTS ({len(homework)} found)")
-        print(f"{'='*60}\n")
+        logger.info(f"HOMEWORK ASSIGNMENTS ({len(homework)} found)")
 
         for i, item in enumerate(homework, 1):
-            print(f"{i}. {item.get('subject', 'N/A')} - {item.get('title', 'N/A')}")
-            print(f"   Deadline: {item.get('deadline', 'N/A')}")
-            print(f"   Class: {item.get('class', 'N/A')} | Week: {item.get('week', 'N/A')}")
-            print(f"   Subject budget: {item.get('subject_budget_hours', 'N/A')} hours | Hours spent on assignment: {item.get('hours_spent', 'N/A')}")
-            print()
-
-        print(f"{'='*60}\n")
+            logger.info(f"{i}. {item.get('subject', 'N/A')} - {item.get('title', 'N/A')}")
+            logger.info(f"   Deadline: {item.get('deadline', 'N/A')}")
+            logger.info(f"   Class: {item.get('class', 'N/A')} | Week: {item.get('week', 'N/A')}")
+            logger.info(f"   Subject budget: {item.get('subject_budget_hours', 'N/A')} hours | Hours spent on assignment: {item.get('hours_spent', 'N/A')}")
     else:
-        print("\n[!] No homework found.")
+        logger.warning("No homework found.")
 
 
 if __name__ == "__main__":

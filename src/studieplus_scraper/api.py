@@ -8,6 +8,7 @@ It provides a clean interface between the raw scraper and the MCP server.
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from .scraper import StudiePlusScraper
+from .logger import logger
 
 
 # ==================== CACHE ====================
@@ -61,24 +62,63 @@ ASSIGNMENTS_TTL = 600  # 10 minutes
 LESSON_DETAILS_TTL = 300  # 5 minutes
 
 
+def _group_lessons_by_date(lessons: List[Dict], week: str, year: str) -> dict:
+    """
+    Group lessons by date for better structure.
+    Removes redundant date/weekday/id fields from lessons since they're at day level.
+    """
+    from collections import defaultdict
+
+    by_date = defaultdict(list)
+    for lesson in lessons:
+        by_date[lesson['date']].append(lesson)
+
+    days = []
+    weekday_map = {
+        0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"
+    }
+
+    for date in sorted(by_date.keys()):
+        date_lessons = sorted(by_date[date], key=lambda x: x['time'])
+
+        # Remove redundant fields from each lesson
+        cleaned_lessons = []
+        for lesson in date_lessons:
+            cleaned = {k: v for k, v in lesson.items() if k not in ('date', 'weekday', 'id')}
+            cleaned_lessons.append(cleaned)
+
+        dt = datetime.strptime(date, '%Y-%m-%d')
+        weekday = weekday_map[dt.weekday()]
+
+        days.append({
+            'date': date,
+            'day': weekday,
+            'lessons': cleaned_lessons
+        })
+
+    return {
+        'week': f"{week}/{year}",
+        'schedule': days
+    }
+
+
 async def get_full_schedule(week_offset: int = 0) -> dict:
     """
-    Get complete weekly schedule with all lessons.
+    Get complete weekly schedule grouped by date.
 
     Args:
         week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
 
     Returns:
         {
-            "week": "46",
-            "year": "2025",
-            "dates": ["2025-11-10", "2025-11-11", ...],
-            "lessons": [Lesson (Basic)]
+            "week": "48/2025",
+            "schedule": [
+                {"date": "2025-11-25", "day": "Mon", "lessons": [
+                    {"time": "08:15-09:15", "subject": "Kemi B", "teacher": "ripe", "room": "M2500",
+                     "has_homework": false, "has_note": false, "has_files": false}
+                ]}
+            ]
         }
-
-    Example:
-        schedule = await get_full_schedule(week_offset=0)
-        print(f"Week {schedule['week']}: {len(schedule['lessons'])} lessons")
     """
     cache_key = f"schedule_week_{week_offset}"
 
@@ -91,12 +131,7 @@ async def get_full_schedule(week_offset: int = 0) -> dict:
     async with StudiePlusScraper() as scraper:
         lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
 
-        result = {
-            "week": week_number,
-            "year": year,
-            "dates": dates,
-            "lessons": lessons
-        }
+        result = _group_lessons_by_date(lessons, week_number, year)
 
         # Store in cache
         _cache.set(cache_key, result)
@@ -152,7 +187,7 @@ async def get_homework_and_notes(
                     if today <= lesson_date <= cutoff_date:
                         all_filtered.append(lesson)
             except Exception as e:
-                print(f"[!] Warning: Could not fetch week {week_offset}: {e}")
+                logger.warning(f"Could not fetch week {week_offset}: {e}")
 
         # If include_details is True, fetch full details for each lesson
         if include_details:
@@ -162,7 +197,7 @@ async def get_homework_and_notes(
                     detail = await scraper.get_lesson_details(lesson['date'], lesson['time'])
                     detailed_lessons.append(detail)
                 except Exception as e:
-                    print(f"[!] Warning: Could not fetch details for {lesson['id']}: {e}")
+                    logger.warning(f"Could not fetch details for {lesson['id']}: {e}")
                     # Fallback to basic lesson data
                     detailed_lessons.append(lesson)
 
@@ -258,7 +293,7 @@ async def get_notes_overview(
                     if today <= lesson_date <= cutoff_date:
                         all_filtered.append(lesson)
             except Exception as e:
-                print(f"[!] Warning: Could not fetch week {week_offset}: {e}")
+                logger.warning(f"Could not fetch week {week_offset}: {e}")
 
         # If include_details is True, fetch full details for each lesson
         if include_details:
@@ -268,7 +303,7 @@ async def get_notes_overview(
                     detail = await scraper.get_lesson_details(lesson['date'], lesson['time'])
                     detailed_lessons.append(detail)
                 except Exception as e:
-                    print(f"[!] Warning: Could not fetch details for {lesson['id']}: {e}")
+                    logger.warning(f"Could not fetch details for {lesson['id']}: {e}")
                     # Fallback to basic lesson data
                     detailed_lessons.append(lesson)
 
