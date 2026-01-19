@@ -191,6 +191,316 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
         return f"5|6|{year}|{dt.month - 1}|{dt.day}|0|0|0|"
 
     # ============================================================
+    # RESSOURCE/FILES API
+    # ============================================================
+
+    def get_lesson_files(self, skema_id: int) -> List[Dict]:
+        """
+        Get files attached to a lesson via ressourceservice.findRessourcerPerContainer.
+
+        Args:
+            skema_id: The lesson ID from SkemaBegivenhed
+
+        Returns:
+            List of file dicts: [{'name': str, 'id': int}, ...]
+        """
+        if not self.login():
+            return []
+
+        # GWT-RPC payload for findRessourcerPerContainer
+        # Format from Chrome DevTools capture:
+        # 7|0|6|base_url|hash|service|method|RessourceKey|RessourceObjektType|1|2|3|4|1|5|5|skema_id|6|12|
+        payload = (
+            "7|0|6|"
+            f"{self.base_url}/skema/skema/|"
+            "09D4724C79CC98B839803FCB9CBF2218|"
+            "dk.uddata.services.interfaces.RessourceService|"
+            "findRessourcerPerContainer|"
+            "dk.uddata.model.ressourcer.RessourceKey/785242658|"
+            "dk.uddata.model.ressourcer.RessourceObjektType/3745084519|"
+            f"1|2|3|4|1|5|5|{skema_id}|6|12|"
+        )
+
+        try:
+            response = self._make_gwt_call(
+                f"{self.base_url}/skema/ressourceservice",
+                payload,
+                self.skema_permutation,
+                "skema"
+            )
+
+            if response.startswith('//OK'):
+                return self._parse_ressource_response(response)
+            else:
+                logger.debug(f"Ressource fetch failed for skema_id={skema_id}: {response[:200]}")
+                return []
+        except Exception as e:
+            logger.debug(f"Error fetching ressources for skema_id={skema_id}: {e}")
+            return []
+
+    def _parse_ressource_response(self, response: str) -> List[Dict]:
+        """
+        Parse findRessourcerPerContainer response using proper GWT structure.
+
+        Ressource structure (from cYf deserializer):
+        b.c = int (skema_id)
+        b.d = pqd string (file name)
+        b.e = int (file ID!)
+        b.f = pqd string (UUID)
+        b.g = object (Type)
+
+        Response is an ArrayList of Ressource objects.
+        """
+        try:
+            parser = GWTParser(response)
+            strings = parser.string_table
+            data = parser.data
+
+            files = []
+
+            # Find class markers in string table
+            ressource_marker = None
+            for i, s in enumerate(strings):
+                if s and s.startswith('dk.uddata.model.ressourcer.Ressource/'):
+                    ressource_marker = i + 1  # 1-based indexing
+                    break
+
+            if not ressource_marker:
+                return []
+
+            # Find each Ressource instance by finding the class marker in data
+            # Then read fields in stack order (backwards from marker position)
+            i = 0
+            while i < len(data):
+                if data[i] == ressource_marker:
+                    # Found a Ressource, read its fields (backwards from here)
+                    # Stack order: marker is last, then fields in reverse order
+                    # So reading forward from before the marker:
+                    # pos-5: Type object marker (or back-ref)
+                    # pos-4: f_idx (UUID string index) OR the actual index value
+                    # pos-3: e (file ID - int)
+                    # pos-2: d_idx (file name string index) OR the actual index value
+                    # pos-1: c (skema_id - int)
+                    # pos: marker
+
+                    try:
+                        # We need to handle pqd pattern: val > 0 ? strings[val-1] : null
+                        # This means: if val > 0, it's a string index, else null
+
+                        # c (skema_id) - position i-1
+                        c = data[i - 1] if i >= 1 else 0
+
+                        # d (file name) - pqd at position i-2
+                        # pqd reads: val = pop(); if val > 0: return strings[val-1]
+                        d_idx = data[i - 2] if i >= 2 else 0
+                        file_name = strings[d_idx - 1] if d_idx > 0 and d_idx <= len(strings) else None
+
+                        # e (file ID) - position i-3
+                        file_id = data[i - 3] if i >= 3 else 0
+
+                        # f (UUID) - pqd at position i-4
+                        f_idx = data[i - 4] if i >= 4 else 0
+                        uuid = strings[f_idx - 1] if f_idx > 0 and f_idx <= len(strings) else None
+
+                        if file_name and isinstance(file_id, int) and file_id > 0:
+                            files.append({
+                                'name': file_name,
+                                'id': file_id,
+                                'uuid': uuid
+                            })
+                    except (IndexError, TypeError):
+                        pass
+
+                i += 1
+
+            return files
+
+        except Exception as e:
+            logger.debug(f"Error parsing ressource response: {e}")
+            return []
+
+    def get_file_download_url(self, file_id: int) -> Optional[str]:
+        """
+        Get the signed download URL for a file via hentRessourceUrl.
+
+        Args:
+            file_id: The ressource/file ID
+
+        Returns:
+            Signed S3 URL for downloading the file, or None on error
+        """
+        if not self.login():
+            return None
+
+        # GWT-RPC payload for hentRessourceUrl
+        # Method: hentRessourceUrl(int fileId, String empty)
+        payload = (
+            "7|0|7|"
+            f"{self.base_url}/skema/skema/|"
+            "09D4724C79CC98B839803FCB9CBF2218|"
+            "dk.uddata.services.interfaces.RessourceService|"
+            "hentRessourceUrl|"
+            "I|"
+            "java.lang.String/2004016611|"
+            "|"  # empty string
+            f"1|2|3|4|2|5|6|{file_id}|7|"
+        )
+
+        try:
+            response = self._make_gwt_call(
+                f"{self.base_url}/skema/ressourceservice",
+                payload,
+                self.skema_permutation,
+                "skema"
+            )
+
+            if response.startswith('//OK'):
+                # Response format: //OK[1, ["https://...signed-url..."], 0, 7]
+                # Parse to extract URL
+                import json
+                content = response[4:]  # Remove //OK prefix
+                parsed = json.loads(content)
+                # URL is in the array at index 1
+                if len(parsed) > 1 and isinstance(parsed[1], list) and len(parsed[1]) > 0:
+                    return parsed[1][0]
+            else:
+                logger.debug(f"hentRessourceUrl failed for file_id={file_id}: {response[:100]}")
+
+            return None
+        except Exception as e:
+            logger.debug(f"Error getting download URL for file_id={file_id}: {e}")
+            return None
+
+    def get_lesson_files_with_urls(self, skema_id: int) -> List[Dict]:
+        """
+        Get files for a lesson with download URLs.
+
+        Convenience method that combines get_lesson_files and get_file_download_url.
+
+        Args:
+            skema_id: The lesson ID
+
+        Returns:
+            List of file dicts: [{'name': str, 'id': int, 'url': str}, ...]
+        """
+        files = self.get_lesson_files(skema_id)
+
+        for f in files:
+            if f.get('id'):
+                url = self.get_file_download_url(f['id'])
+                f['url'] = url or ''
+
+        return files
+
+    # ============================================================
+    # SCHEDULE NOTES API (for has_files detection)
+    # ============================================================
+
+    def get_note_for_skema(self, skema_id: int) -> Optional[Dict]:
+        """
+        Fetch SkemaNote2 for a specific lesson.
+
+        Returns dict with:
+        - has_files: bool (from SkemaNote2.d)
+        - homework_text: str (from SkemaNote2.e)
+        - note_text: str (from SkemaNote2.g)
+        """
+        if not self.login():
+            return None
+
+        # GWT-RPC payload for hentNoteForSkema
+        # Service: skemanoteservice, Hash: EB1BAA9F2AD8A53B59DC22F1082E0E1B
+        payload = (
+            "7|0|5|"
+            f"{self.base_url}/skema/skema/|"
+            "EB1BAA9F2AD8A53B59DC22F1082E0E1B|"
+            "dk.uddata.services.interfaces.SkemaNote2Service|"
+            "hentNoteForSkema|"
+            "I|"
+            f"1|2|3|4|1|5|{skema_id}|"
+        )
+
+        try:
+            response = self._make_gwt_call(
+                f"{self.base_url}/skema/skemanoteservice",
+                payload,
+                self.skema_permutation,
+                "skema"
+            )
+
+            if response.startswith('//OK'):
+                return self._parse_skema_note_response(response)
+            else:
+                logger.debug(f"Note fetch failed for skema_id={skema_id}: {response[:100]}")
+                return None
+        except Exception as e:
+            logger.debug(f"Error fetching note for skema_id={skema_id}: {e}")
+            return None
+
+    def _parse_skema_note_response(self, response: str) -> Optional[Dict]:
+        """Parse SkemaNote2 response to extract has_files and other fields."""
+        try:
+            parser = GWTParser(response)
+            data = parser.data
+            strings = parser.string_table
+
+            # SkemaNote2 structure (from JS hAg function):
+            # b.a = int
+            # b.b = string
+            # b.c = int
+            # b.d = boolean (HAS_FILES!)
+            # b.e = string (homework text)
+            # b.f = string (homework HTML)
+            # b.g = string (note text)
+            # b.i = string (note HTML)
+            # ... more fields
+
+            # Find SkemaNote2 class marker
+            note_marker = None
+            for i, s in enumerate(strings):
+                if s and 'SkemaNote2/' in s:
+                    note_marker = i + 1  # 1-based index
+                    break
+
+            if not note_marker:
+                return {'has_files': False}
+
+            # Find position of SkemaNote2 marker in data
+            for i, val in enumerate(data):
+                if val == note_marker and i > 5:
+                    # Read fields from position before the marker
+                    # Stack is read backwards, so fields are: a, b_idx, c, d, e_idx, f_idx, g_idx, i_idx...
+                    pos = i - 1
+
+                    # Try to extract has_files (field d is a boolean)
+                    # Based on JS: b.d = !!a.b[--a.a] - it's the 4th field
+                    # Fields order in data (before marker): s, r, q, p, o, n, k, j, i, g, f, e, d, c, b, a
+                    # So field d is at position -13 from marker (counting backwards)
+
+                    # Simplified approach: scan for boolean pattern
+                    # has_files is a 0 or 1 int
+                    has_files = False
+
+                    # Look for the boolean field pattern
+                    for offset in range(3, min(16, pos)):
+                        val_at = data[pos - offset] if pos - offset >= 0 else None
+                        # Boolean in GWT is 0 or 1
+                        if val_at in [0, 1] and pos - offset - 1 >= 0:
+                            # Check if it's the has_files field (preceded by an int)
+                            prev_val = data[pos - offset - 1]
+                            if isinstance(prev_val, int) and prev_val >= 0:
+                                has_files = bool(val_at)
+                                break
+
+                    return {'has_files': has_files}
+
+            return {'has_files': False}
+
+        except Exception as e:
+            logger.debug(f"Error parsing note response: {e}")
+            return {'has_files': False}
+
+    # ============================================================
     # SCHEDULE API
     # ============================================================
 
@@ -232,9 +542,13 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
         return response
 
-    async def parse_schedule(self, week_offset: int = 0) -> Tuple[List[Dict], str, str, List[str]]:
+    async def parse_schedule(self, week_offset: int = 0, fetch_notes: bool = False) -> Tuple[List[Dict], str, str, List[str]]:
         """
         Parse schedule and return lessons in same format as Playwright scraper.
+
+        Args:
+            week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
+            fetch_notes: If True, makes additional API calls to get has_files info
 
         Returns: (lessons, week_number, year, dates)
         """
@@ -252,6 +566,18 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
         # Use the GWT deserializer to parse lessons
         gwt_lessons = parse_schedule_response(response)
 
+        # Build a map from lesson_id to has_files if fetch_notes is enabled
+        lesson_notes = {}
+        if fetch_notes:
+            # Get unique lesson IDs
+            unique_ids = set(gl.lesson_id for gl in gwt_lessons if gl.lesson_id > 0)
+            logger.info(f"Fetching notes for {len(unique_ids)} unique lessons...")
+
+            for lesson_id in unique_ids:
+                note_data = self.get_note_for_skema(lesson_id)
+                if note_data:
+                    lesson_notes[lesson_id] = note_data
+
         # Convert to dict format compatible with existing API
         weekday_names = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
         lessons = []
@@ -264,8 +590,14 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             time_str = f"{gl.start_time.strftime('%H:%M')}-{gl.end_time.strftime('%H:%M')}"
             weekday = weekday_names[gl.start_time.weekday()]
 
+            # Get has_files from notes if available
+            has_files = False
+            if gl.lesson_id in lesson_notes:
+                has_files = lesson_notes[gl.lesson_id].get('has_files', False)
+
             lesson = {
                 'id': f"{lesson_date}_{gl.start_time.strftime('%H:%M')}",
+                'lesson_id': gl.lesson_id,  # Include raw lesson_id for debugging
                 'date': lesson_date,
                 'weekday': weekday,
                 'time': time_str,
@@ -274,7 +606,7 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 'room': ", ".join(gl.rooms) if gl.rooms else "",
                 'has_homework': gl.has_homework,
                 'has_note': gl.has_note,
-                'has_files': False
+                'has_files': has_files
             }
             lessons.append(lesson)
 

@@ -681,8 +681,10 @@ class GWTDeserializer:
         # b.M = ? (type 210)
         M = self._read_object()
 
-        # b.N = ? (type 24)
+        # b.N = skema_id (Integer type 24) - THIS IS THE LESSON ID!
         N = self._read_object()
+        if isinstance(N, int):
+            lesson.lesson_id = N
 
         # b.O = ? (type 24)
         O = self._read_object()
