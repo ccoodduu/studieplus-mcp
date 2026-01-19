@@ -38,3 +38,4 @@ webcrack_output/
 node_modules/
 package.json
 package-lock.json
+debug_gwt_response_*.txt

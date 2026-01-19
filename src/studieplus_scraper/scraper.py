@@ -1,12 +1,13 @@
 import os
 import asyncio
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from playwright.async_api import async_playwright, Page, Browser
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from .logger import logger
+from .base_scraper import BaseStudiePlusScraper
 
 load_dotenv()
 
@@ -18,7 +19,9 @@ def debug_path(filename: str) -> str:
     return os.path.join(DEBUG_DIR, filename)
 
 
-class StudiePlusScraper:
+class StudiePlusScraper(BaseStudiePlusScraper):
+    """Full-featured Playwright-based scraper for StudiePlus (uses ~300MB RAM)."""
+
     def __init__(self, username: str = None, password: str = None, school: str = None):
         self.username = username or os.getenv("STUDIEPLUS_USERNAME")
         self.password = password or os.getenv("STUDIEPLUS_PASSWORD")

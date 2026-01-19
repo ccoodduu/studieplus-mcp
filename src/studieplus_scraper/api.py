@@ -3,12 +3,34 @@ API Layer for StudiePlus Scraper
 
 This layer handles business logic, data transformation, and scraper lifecycle management.
 It provides a clean interface between the raw scraper and the MCP server.
+
+Set USE_REQUESTS_SCRAPER=true in environment to use lightweight HTTP-based scraper
+instead of Playwright browser automation. Recommended for low-memory environments.
 """
 
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from .scraper import StudiePlusScraper
+from .requests_scraper import StudiePlusRequestsScraper
 from .logger import logger
+
+
+def get_scraper():
+    """
+    Factory function to get the appropriate scraper based on environment.
+
+    Set USE_REQUESTS_SCRAPER=true to use lightweight HTTP scraper (~30MB RAM)
+    instead of Playwright browser automation (~300-500MB RAM).
+    """
+    use_requests = os.getenv('USE_REQUESTS_SCRAPER', '').lower() in ('true', '1', 'yes')
+
+    if use_requests:
+        logger.info("Using lightweight requests-based scraper")
+        return StudiePlusRequestsScraper()
+    else:
+        logger.info("Using Playwright browser scraper")
+        return StudiePlusScraper()
 
 
 # ==================== CACHE ====================
@@ -128,7 +150,7 @@ async def get_full_schedule(week_offset: int = 0) -> dict:
         return cached
 
     # Cache miss, fetch from scraper
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
 
         result = _group_lessons_by_date(lessons, week_number, year)
@@ -162,7 +184,7 @@ async def get_homework_and_notes(
         homework = await get_homework_and_notes(days_ahead=14, include_details=True)
         print(f"Found {homework['count']} lessons with homework/notes in next 14 days")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         today = datetime.now().date()
         cutoff_date = today + timedelta(days=days_ahead)
 
@@ -235,7 +257,7 @@ async def get_lesson_detail(date: str, time: str) -> dict:
         return cached
 
     # Cache miss, fetch from scraper
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         detail = await scraper.get_lesson_details(date=date, time=time)
 
         # Store in cache
@@ -267,7 +289,7 @@ async def get_notes_overview(
         notes = await get_notes_overview(days_ahead=14, include_details=True)
         print(f"Found {notes['count']} lessons with notes in next 14 days")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         today = datetime.now().date()
         cutoff_date = today + timedelta(days=days_ahead)
 
@@ -339,7 +361,7 @@ async def download_file(file_url: str, file_name: str, output_dir: str = "./down
         result = await download_file("https://...", "rapport.pdf")
         print(f"Downloaded to: {result['file_path']}")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         result = await scraper.download_lesson_file(
             file_url=file_url,
             file_name=file_name,
@@ -371,7 +393,7 @@ async def load_file(file_url: str, file_name: str) -> dict:
         if result['success']:
             print(f"File content: {result['content']}")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         result = await scraper.load_lesson_file(
             file_url=file_url,
             file_name=file_name
@@ -414,7 +436,7 @@ async def get_all_assignments() -> dict:
         return cached
 
     # Cache miss, fetch from scraper
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         assignments = await scraper.get_homework()
         result = {
             'count': len(assignments),
@@ -445,7 +467,7 @@ async def get_upcoming_assignments(days: int = 7) -> dict:
         upcoming = await get_upcoming_assignments(days=14)
         print(f"Found {upcoming['count']} assignments due in next 14 days")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         all_assignments = await scraper.get_homework()
 
         cutoff_date = datetime.now() + timedelta(days=days)
@@ -486,7 +508,7 @@ async def get_assignments_by_subject(subject: str) -> dict:
         math_assignments = await get_assignments_by_subject("Matematik")
         print(f"Found {math_assignments['count']} math assignments")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         all_assignments = await scraper.get_homework()
 
         filtered = [
@@ -529,6 +551,6 @@ async def get_assignment_detail(row_index: str) -> dict:
         print(f"Assignment: {details['assignment_title']}")
         print(f"Description: {details['description']}")
     """
-    async with StudiePlusScraper() as scraper:
+    async with get_scraper() as scraper:
         details = await scraper.get_assignment_details(row_index)
         return details
