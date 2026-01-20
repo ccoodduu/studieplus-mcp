@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from .logger import logger
 from .base_scraper import BaseStudiePlusScraper
-from .gwt_deserializer import GWTScheduleParser, parse_schedule_response
+from .gwt_deserializer import GWTScheduleParser, parse_schedule_response, GWTDeserializer
 
 load_dotenv()
 
@@ -606,7 +606,9 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 'room': ", ".join(gl.rooms) if gl.rooms else "",
                 'has_homework': gl.has_homework,
                 'has_note': gl.has_note,
-                'has_files': has_files
+                'has_files': has_files,
+                'homework': gl.homework or "",  # Homework text from SkemaNote2
+                'note': gl.note or "",  # Note text from SkemaNote2
             }
             lessons.append(lesson)
 
@@ -1022,16 +1024,82 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             "opgave"
         )
 
-    def get_homework(self) -> List[Dict]:
-        """Get all assignments."""
-        response = self.get_assignments_raw()
-        parser = GWTParser(response)
+    def get_aflevering_raw(self, aflevering_id: int) -> str:
+        """
+        Get raw single assignment details via GWT-RPC getAflevering.
 
-        # For now return raw data - full parsing TODO
-        return {
-            'raw_count': len(parser.data),
-            'string_count': len(parser.string_table)
-        }
+        Args:
+            aflevering_id: The assignment ID (from OpgaveElev, not Aflevering)
+
+        Returns:
+            Raw GWT-RPC response string
+        """
+        if not self.login():
+            raise Exception("Login failed")
+
+        # GWT-RPC payload for getAflevering(int afleveringId)
+        payload = (
+            "7|0|5|"
+            f"{self.base_url}/opgave/opgave/|"
+            "459B74E0E07134BC40784E117D837355|"
+            "dk.uddata.services.interfaces.OpgaveService|"
+            "getAflevering|"
+            "I|"
+            f"1|2|3|4|1|5|{aflevering_id}|"
+        )
+
+        return self._make_gwt_call(
+            f"{self.base_url}/opgave/opgaveservice",
+            payload,
+            self.opgave_permutation,
+            "opgave"
+        )
+
+    def get_assignment_files(self, container_id: int) -> List[Dict]:
+        """
+        Get files attached to an assignment via ressourceservice.
+
+        Uses the same RessourceService as lesson files but with type 5 (OPGAVE)
+        instead of type 12 (SKEMA).
+
+        Args:
+            container_id: The container ID from Aflevering (field c)
+
+        Returns:
+            List of file dicts: [{'name': str, 'id': int, 'uuid': str}, ...]
+        """
+        if not self.login():
+            return []
+
+        # GWT-RPC payload for findRessourcerPerContainer
+        # Type 5 = OPGAVE (assignment), Type 12 = SKEMA (lesson)
+        payload = (
+            "7|0|6|"
+            f"{self.base_url}/opgave/opgave/|"
+            "09D4724C79CC98B839803FCB9CBF2218|"
+            "dk.uddata.services.interfaces.RessourceService|"
+            "findRessourcerPerContainer|"
+            "dk.uddata.model.ressourcer.RessourceKey/785242658|"
+            "dk.uddata.model.ressourcer.RessourceObjektType/3745084519|"
+            f"1|2|3|4|1|5|5|{container_id}|6|5|"
+        )
+
+        try:
+            response = self._make_gwt_call(
+                f"{self.base_url}/opgave/ressourceservice",
+                payload,
+                self.opgave_permutation,
+                "opgave"
+            )
+
+            if response.startswith('//OK'):
+                return self._parse_ressource_response(response)
+            else:
+                logger.debug(f"Assignment files fetch failed for container_id={container_id}: {response[:200]}")
+                return []
+        except Exception as e:
+            logger.debug(f"Error fetching assignment files for container_id={container_id}: {e}")
+            return []
 
     async def get_lesson_details(self, date: str, time: str) -> Dict:
         """Get details for a specific lesson."""
@@ -1047,138 +1115,77 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
     # ASSIGNMENTS (stub implementations)
     # ============================================================
 
-    async def get_homework(self) -> List[Dict]:
+    async def get_homework(self, only_open: bool = True) -> List[Dict]:
         """
-        Get assignments from GWT-RPC API.
+        Get assignments from GWT-RPC API using proper GWT deserializer.
+
+        Args:
+            only_open: If True, only return non-submitted assignments
 
         Returns list of assignments with subject, title, deadline, etc.
         """
         try:
             response = self.get_assignments_raw()
-            parser = GWTParser(response)
-            strings = parser.string_table
-            data = parser.data
+            deserializer = GWTDeserializer(response)
+            assignments = deserializer.parse_assignments(only_open=only_open)
 
-            # Build subject lookup
-            subjects = {}
-            subject_names = ['Matematik', 'Kemi', 'Engelsk', 'Biologi', 'Dansk', 'Fysik',
-                             'Samfundsfag', 'Nat.vid. grund', 'Informatik', 'Teknologi',
-                             'Komm. og it', 'Programmering', 'Idéhistorie', 'Fælles arr.']
-            for i, s in enumerate(strings):
-                if s and s in subject_names:
-                    subjects[i] = s
+            # Add row_index for compatibility
+            for i, a in enumerate(assignments):
+                a['row_index'] = str(i)
 
-            # Build title lookup - strings with assignment keywords
-            title_keywords = ['Aflevering', 'Journal', 'Projekt', 'Rapport', 'Øvelse', 'Opgave',
-                              'Præsentation', 'FR:', 'SO1', 'SO2', 'SO3', 'NV', 'Analyse',
-                              'Essay', 'Artikel', 'Explainer', 'Podcast', 'Dokumentation',
-                              'Portfolio', 'Screening', 'Test', 'Intro', 'Refleksion',
-                              'Fysiksæt', 'MatB', 'G12', 'Gammelt', 'Minilex', 'Eksamen']
-            titles = set()
-            for i, s in enumerate(strings):
-                if s and len(s) > 3 and '/' not in s:
-                    if any(kw.lower() in s.lower() for kw in title_keywords):
-                        titles.add(i)
-
-            # Build description lookup - HTML content strings
-            descriptions = {}
-            for i, s in enumerate(strings):
-                if s and len(s) > 10:
-                    if '<font' in s.lower() or '<div' in s.lower() or '<span' in s.lower():
-                        descriptions[i] = s
-
-            # Parse assignments
-            assignments = []
-            i = 0
-            while i < len(data) - 50:
-                if data[i] in subjects:
-                    subject = subjects[data[i]]
-                    context = data[i-5:i+100]  # Wider context for descriptions
-
-                    # Find title index
-                    title = None
-                    title_idx = None
-                    for v in context:
-                        if isinstance(v, int) and v in titles:
-                            title = strings[v]
-                            title_idx = v
-                            break
-
-                    # Find description (HTML content near subject/title)
-                    description = None
-                    for v in context:
-                        if isinstance(v, int) and v in descriptions:
-                            description = descriptions[v]
-                            break
-
-                    # Find deadline (day, month, year pattern with year 124-127)
-                    deadline = None
-                    for j in range(len(context) - 3):
-                        if isinstance(context[j], int) and context[j] in [124, 125, 126, 127]:
-                            year = context[j] + 1900
-                            if j >= 2:
-                                day = context[j-2]
-                                month = context[j-1]
-                                if isinstance(day, int) and 1 <= day <= 31 and isinstance(month, int) and 1 <= month <= 12:
-                                    deadline = f'{day:02d}.{month:02d}.{year}'
-                                    break
-
-                    if title:
-                        # Avoid duplicates
-                        if not any(a['title'] == title and a['subject'] == subject for a in assignments):
-                            assignments.append({
-                                'subject': subject,
-                                'title': title[:100],
-                                'description': description or '',
-                                'deadline': deadline or '',
-                                'subject_budget_hours': '',
-                                'hours_spent': '',
-                                'class': '',
-                                'week': '',
-                                'row_index': str(len(assignments))
-                            })
-
-                    i += 20
-                else:
-                    i += 1
-
-            logger.info(f"Found {len(assignments)} assignments via GWT-RPC")
+            logger.info(f"Found {len(assignments)} assignments via GWT deserializer (only_open={only_open})")
             return assignments
 
         except Exception as e:
             logger.error(f"Error fetching assignments: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     async def get_assignment_details(self, row_index: str) -> Dict:
         """
         Get assignment details by row index.
 
-        Returns assignment info including description (HTML content).
+        Returns assignment info including description (HTML content) and files.
+        Uses getAflevering GWT-RPC call for full details.
         """
         try:
-            assignments = await self.get_homework()
+            # Get all assignments to find the one at row_index
+            assignments = await self.get_homework(only_open=False)
             idx = int(row_index)
 
-            if 0 <= idx < len(assignments):
-                assignment = assignments[idx]
-                return {
-                    'assignment_title': assignment.get('title', ''),
-                    'subject': assignment.get('subject', ''),
-                    'description': assignment.get('description', ''),
-                    'student_time': '',
-                    'responsible': '',
-                    'course': assignment.get('class', ''),
-                    'evaluation_form': '',
-                    'groups': '',
-                    'submission_status': '',
-                    'deadline': assignment.get('deadline', ''),
-                    'files': [],
-                    'row_index': row_index
-                }
+            if not (0 <= idx < len(assignments)):
+                return {'error': f'Assignment not found at index {row_index}'}
 
-            return {'error': f'Assignment not found at index {row_index}'}
+            assignment = assignments[idx]
+            container_id = assignment.get('container_id')
+
+            # Get files for this assignment using container_id
+            files = []
+            if container_id:
+                files = self.get_assignment_files(container_id)
+                logger.info(f"Found {len(files)} files for assignment with container_id={container_id}")
+
+            return {
+                'assignment_title': assignment.get('title', ''),
+                'subject': assignment.get('subject', ''),
+                'description': assignment.get('description', ''),
+                'student_time': assignment.get('hours_spent', ''),
+                'responsible': '',
+                'course': assignment.get('class', ''),
+                'evaluation_form': '',
+                'groups': '',
+                'submission_status': 'Afleveret' if assignment.get('submitted') else 'Ikke afleveret',
+                'deadline': assignment.get('deadline', ''),
+                'files': files,
+                'row_index': row_index,
+                'container_id': container_id,
+            }
+
         except Exception as e:
             logger.error(f"Error getting assignment details: {e}")
+            import traceback
+            traceback.print_exc()
             return {'error': str(e)}
 
     async def download_lesson_file(self, file_url: str, file_name: str, output_dir: str = "./downloads") -> Dict:

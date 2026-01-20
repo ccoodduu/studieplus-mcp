@@ -50,13 +50,16 @@ class BaseStudiePlusScraper(ABC):
         pass
 
     @abstractmethod
-    async def get_homework(self) -> List[Dict]:
+    async def get_homework(self, only_open: bool = True) -> List[Dict]:
         """
         Get all assignments from the assignments page.
 
+        Args:
+            only_open: If True, only return non-submitted/open assignments
+
         Returns:
             List of assignment dicts with keys:
-                - subject, title, deadline, class, week, etc.
+                - subject, title, deadline, class, week, submitted, etc.
         """
         pass
 

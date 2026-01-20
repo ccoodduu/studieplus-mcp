@@ -163,7 +163,7 @@ class StudiePlusScraper(BaseStudiePlusScraper):
 
         return False
 
-    async def get_homework(self) -> List[Dict]:
+    async def get_homework(self, only_open: bool = True) -> List[Dict]:
         if not self.page:
             raise Exception("Browser not started. Call start() first.")
 
@@ -184,6 +184,9 @@ class StudiePlusScraper(BaseStudiePlusScraper):
             homework_data = await self._extract_homework_from_page()
 
             if homework_data:
+                # Filter by only_open if requested
+                if only_open:
+                    homework_data = [h for h in homework_data if not h.get('submitted', False)]
                 return homework_data
 
             logger.info("Extracting all visible text from assignments page...")

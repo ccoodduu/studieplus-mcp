@@ -20,17 +20,17 @@ def get_scraper():
     """
     Factory function to get the appropriate scraper based on environment.
 
-    Set USE_REQUESTS_SCRAPER=true to use lightweight HTTP scraper (~30MB RAM)
-    instead of Playwright browser automation (~300-500MB RAM).
+    By default uses lightweight HTTP scraper (~30MB RAM).
+    Set USE_PLAYWRIGHT_SCRAPER=true to use Playwright browser automation (~300-500MB RAM).
     """
-    use_requests = os.getenv('USE_REQUESTS_SCRAPER', '').lower() in ('true', '1', 'yes')
+    use_playwright = os.getenv('USE_PLAYWRIGHT_SCRAPER', '').lower() in ('true', '1', 'yes')
 
-    if use_requests:
-        logger.info("Using lightweight requests-based scraper")
-        return StudiePlusRequestsScraper()
-    else:
+    if use_playwright:
         logger.info("Using Playwright browser scraper")
         return StudiePlusScraper()
+    else:
+        logger.info("Using lightweight requests-based scraper")
+        return StudiePlusRequestsScraper()
 
 
 # ==================== CACHE ====================
@@ -445,13 +445,17 @@ async def get_lesson_files(lesson_id: int) -> dict:
 
 # ==================== ASSIGNMENTS (Afleveringer) ====================
 
-async def get_all_assignments() -> dict:
+async def get_all_assignments(only_open: bool = True) -> dict:
     """
     Get all assignments from the Opgaver (Assignments) page.
+
+    Args:
+        only_open: If True, only return non-submitted/open assignments
 
     Returns:
         {
             'count': int,
+            'only_open': bool,
             'assignments': [
                 {
                     'subject': str,
@@ -461,6 +465,8 @@ async def get_all_assignments() -> dict:
                     'class': str,
                     'week': str,
                     'deadline': str,
+                    'submitted': bool,
+                    'submission_date': str,
                     'row_index': str
                 }
             ]
@@ -469,8 +475,12 @@ async def get_all_assignments() -> dict:
     Example:
         assignments = await get_all_assignments()
         print(f"Found {assignments['count']} assignments")
+
+        # Get only open assignments
+        open_assignments = await get_all_assignments(only_open=True)
+        print(f"Found {open_assignments['count']} open assignments")
     """
-    cache_key = "assignments_all"
+    cache_key = f"assignments_{'open' if only_open else 'all'}"
 
     # Check cache first
     cached = _cache.get(cache_key, ASSIGNMENTS_TTL)
@@ -479,9 +489,10 @@ async def get_all_assignments() -> dict:
 
     # Cache miss, fetch from scraper
     async with get_scraper() as scraper:
-        assignments = await scraper.get_homework()
+        assignments = await scraper.get_homework(only_open=only_open)
         result = {
             'count': len(assignments),
+            'only_open': only_open,
             'assignments': assignments
         }
 
@@ -491,26 +502,51 @@ async def get_all_assignments() -> dict:
         return result
 
 
-async def get_upcoming_assignments(days: int = 7) -> dict:
+async def get_open_assignments() -> dict:
+    """
+    Get only open (non-submitted) assignments.
+
+    Convenience wrapper for get_all_assignments(only_open=True).
+
+    Returns:
+        {
+            'count': int,
+            'assignments': [Assignment]
+        }
+
+    Example:
+        open_assignments = await get_open_assignments()
+        print(f"Found {open_assignments['count']} open assignments")
+    """
+    return await get_all_assignments(only_open=True)
+
+
+async def get_upcoming_assignments(days: int = 7, only_open: bool = True) -> dict:
     """
     Get assignments with deadlines within the next N days.
 
     Args:
         days: Number of days to look ahead (default: 7)
+        only_open: If True, only return non-submitted assignments (default: False)
 
     Returns:
         {
             'count': int,
             'days': int,
+            'only_open': bool,
             'assignments': [Assignment]
         }
 
     Example:
         upcoming = await get_upcoming_assignments(days=14)
         print(f"Found {upcoming['count']} assignments due in next 14 days")
+
+        # Get only open assignments due soon
+        urgent = await get_upcoming_assignments(days=7, only_open=True)
+        print(f"Found {urgent['count']} open assignments due in next 7 days")
     """
     async with get_scraper() as scraper:
-        all_assignments = await scraper.get_homework()
+        all_assignments = await scraper.get_homework(only_open=only_open)
 
         cutoff_date = datetime.now() + timedelta(days=days)
         upcoming = []
@@ -528,30 +564,33 @@ async def get_upcoming_assignments(days: int = 7) -> dict:
         return {
             'count': len(upcoming),
             'days': days,
+            'only_open': only_open,
             'assignments': upcoming
         }
 
 
-async def get_assignments_by_subject(subject: str) -> dict:
+async def get_assignments_by_subject(subject: str, only_open: bool = True) -> dict:
     """
     Get assignments filtered by subject name.
 
     Args:
         subject: Subject name (e.g., "Matematik", "Dansk", "Engelsk")
+        only_open: If True, only return non-submitted assignments (default: True)
 
     Returns:
         {
             'subject': str,
             'count': int,
+            'only_open': bool,
             'assignments': [Assignment]
         }
 
     Example:
         math_assignments = await get_assignments_by_subject("Matematik")
-        print(f"Found {math_assignments['count']} math assignments")
+        print(f"Found {math_assignments['count']} open math assignments")
     """
     async with get_scraper() as scraper:
-        all_assignments = await scraper.get_homework()
+        all_assignments = await scraper.get_homework(only_open=only_open)
 
         filtered = [
             a for a in all_assignments
@@ -561,6 +600,7 @@ async def get_assignments_by_subject(subject: str) -> dict:
         return {
             'subject': subject,
             'count': len(filtered),
+            'only_open': only_open,
             'assignments': filtered
         }
 
@@ -596,3 +636,261 @@ async def get_assignment_detail(row_index: str) -> dict:
     async with get_scraper() as scraper:
         details = await scraper.get_assignment_details(row_index)
         return details
+
+
+# ==================== CONVENIENCE FUNCTIONS ====================
+
+WEEKDAYS_DA = {
+    0: "Mandag", 1: "Tirsdag", 2: "Onsdag", 3: "Torsdag",
+    4: "Fredag", 5: "Lørdag", 6: "Søndag"
+}
+
+
+async def get_day_overview(day_offset: int = 0) -> dict:
+    """
+    Get complete overview for a specific day: schedule, homework, notes, and assignments due.
+
+    Args:
+        day_offset: Days from today (0=today, 1=tomorrow, -1=yesterday)
+
+    Returns:
+        {
+            'date': str (ISO format),
+            'weekday': str (Danish),
+            'lessons': [{'time', 'subject', 'teacher', 'room', 'lesson_id'}],
+            'homework': [lessons with homework text],
+            'notes': [lessons with notes text],
+            'assignments_due': [assignments with deadline this day],
+            'first_lesson': {'time', 'room'} or None,
+            'last_lesson': {'time', 'room'} or None
+        }
+    """
+    target_date = datetime.now().date() + timedelta(days=day_offset)
+    target_date_str = target_date.strftime('%Y-%m-%d')
+    weekday = WEEKDAYS_DA[target_date.weekday()]
+
+    # Calculate which week offset we need
+    today = datetime.now().date()
+    today_week = today.isocalendar()[1]
+    target_week = target_date.isocalendar()[1]
+    week_offset = target_week - today_week
+
+    # Handle year boundary
+    if target_date.year > today.year:
+        week_offset = target_week + (52 - today_week)
+    elif target_date.year < today.year:
+        week_offset = -(today_week + (52 - target_week))
+
+    async with get_scraper() as scraper:
+        # Get schedule for the week containing target date
+        lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
+
+        # Filter lessons for target date
+        day_lessons = [l for l in lessons if l.get('date') == target_date_str]
+        day_lessons.sort(key=lambda x: x.get('time', ''))
+
+        # Separate homework and notes
+        homework = [l for l in day_lessons if l.get('has_homework')]
+        notes = [l for l in day_lessons if l.get('has_note')]
+
+        # Get assignments due this day
+        all_assignments = await scraper.get_homework(only_open=True)
+        assignments_due = []
+        for a in all_assignments:
+            deadline = a.get('deadline', '')
+            if deadline:
+                try:
+                    deadline_dt = datetime.strptime(deadline, '%d.%m.%Y %H:%M')
+                    if deadline_dt.date() == target_date:
+                        assignments_due.append(a)
+                except:
+                    pass
+
+        # Clean up lesson data for output
+        clean_lessons = []
+        for l in day_lessons:
+            clean_lessons.append({
+                'time': l.get('time'),
+                'subject': l.get('subject'),
+                'teacher': l.get('teacher'),
+                'room': l.get('room'),
+                'lesson_id': l.get('lesson_id'),
+                'has_homework': l.get('has_homework', False),
+                'has_note': l.get('has_note', False),
+                'has_files': l.get('has_files', False),
+                'homework': l.get('homework', ''),  # Homework text
+                'note': l.get('note', ''),  # Note text
+            })
+
+        # First and last lesson info
+        first_lesson = None
+        last_lesson = None
+        if clean_lessons:
+            first = clean_lessons[0]
+            first_lesson = {'time': first['time'], 'room': first['room'], 'subject': first['subject']}
+            last = clean_lessons[-1]
+            last_lesson = {'time': last['time'], 'room': last['room'], 'subject': last['subject']}
+
+        return {
+            'date': target_date_str,
+            'weekday': weekday,
+            'lessons': clean_lessons,
+            'homework': homework,
+            'notes': notes,
+            'assignments_due': assignments_due,
+            'first_lesson': first_lesson,
+            'last_lesson': last_lesson,
+        }
+
+
+async def get_week_overview(week_offset: int = 0) -> dict:
+    """
+    Get complete overview for a specific week: schedule, homework, notes, and assignments.
+
+    Args:
+        week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
+
+    Returns:
+        {
+            'week': str (e.g., "4/2026"),
+            'days': [{'date', 'weekday', 'lessons': [...]}],
+            'homework_count': int,
+            'notes_count': int,
+            'assignments': [assignments with deadline in this week]
+        }
+    """
+    async with get_scraper() as scraper:
+        lessons, week_number, year, dates = await scraper.parse_schedule(week_offset=week_offset)
+
+        # Group lessons by date
+        from collections import defaultdict
+        by_date = defaultdict(list)
+        for lesson in lessons:
+            by_date[lesson['date']].append(lesson)
+
+        # Build days structure
+        days = []
+        homework_count = 0
+        notes_count = 0
+
+        for date_str in sorted(by_date.keys()):
+            date_lessons = sorted(by_date[date_str], key=lambda x: x['time'])
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+            weekday = WEEKDAYS_DA[dt.weekday()]
+
+            # Count homework and notes
+            for l in date_lessons:
+                if l.get('has_homework'):
+                    homework_count += 1
+                if l.get('has_note'):
+                    notes_count += 1
+
+            # Clean up lessons
+            clean_lessons = []
+            for l in date_lessons:
+                clean_lessons.append({
+                    'time': l.get('time'),
+                    'subject': l.get('subject'),
+                    'teacher': l.get('teacher'),
+                    'room': l.get('room'),
+                    'lesson_id': l.get('lesson_id'),
+                    'has_homework': l.get('has_homework', False),
+                    'has_note': l.get('has_note', False),
+                    'has_files': l.get('has_files', False),
+                    'homework': l.get('homework', ''),  # Homework text
+                    'note': l.get('note', ''),  # Note text
+                })
+
+            days.append({
+                'date': date_str,
+                'weekday': weekday,
+                'lessons': clean_lessons,
+            })
+
+        # Get week date range for assignment filtering
+        if dates:
+            week_start = datetime.strptime(min(dates), '%Y-%m-%d').date()
+            week_end = datetime.strptime(max(dates), '%Y-%m-%d').date()
+        else:
+            # Fallback: calculate from week number
+            week_start = datetime.now().date() + timedelta(weeks=week_offset)
+            week_start = week_start - timedelta(days=week_start.weekday())
+            week_end = week_start + timedelta(days=6)
+
+        # Get assignments due this week
+        all_assignments = await scraper.get_homework(only_open=True)
+        week_assignments = []
+        for a in all_assignments:
+            deadline = a.get('deadline', '')
+            if deadline:
+                try:
+                    deadline_dt = datetime.strptime(deadline, '%d.%m.%Y %H:%M')
+                    if week_start <= deadline_dt.date() <= week_end:
+                        week_assignments.append(a)
+                except:
+                    pass
+
+        return {
+            'week': f"{week_number}/{year}",
+            'days': days,
+            'homework_count': homework_count,
+            'notes_count': notes_count,
+            'assignments': week_assignments,
+        }
+
+
+async def get_assignments_filtered(
+    include_submitted: bool = False,
+    days_ahead: int = None,
+    subject: str = None
+) -> dict:
+    """
+    Get assignments with optional filters.
+
+    Args:
+        include_submitted: Include already submitted assignments (default: False)
+        days_ahead: Only assignments with deadline within N days (None = all)
+        subject: Filter by subject name (None = all subjects)
+
+    Returns:
+        {
+            'count': int,
+            'filters': {'include_submitted', 'days_ahead', 'subject'},
+            'assignments': [Assignment]
+        }
+    """
+    async with get_scraper() as scraper:
+        all_assignments = await scraper.get_homework(only_open=not include_submitted)
+
+        filtered = all_assignments
+
+        # Filter by days_ahead
+        if days_ahead is not None:
+            cutoff_date = datetime.now() + timedelta(days=days_ahead)
+            filtered = []
+            for a in all_assignments:
+                deadline = a.get('deadline', '')
+                if deadline:
+                    try:
+                        deadline_dt = datetime.strptime(deadline, '%d.%m.%Y %H:%M')
+                        if deadline_dt <= cutoff_date:
+                            filtered.append(a)
+                    except:
+                        pass
+
+        # Filter by subject
+        if subject:
+            filtered = [
+                a for a in filtered
+                if subject.lower() in a.get('subject', '').lower()
+            ]
+
+        return {
+            'count': len(filtered),
+            'filters': {
+                'include_submitted': include_submitted,
+                'days_ahead': days_ahead,
+                'subject': subject,
+            },
+            'assignments': filtered,
+        }

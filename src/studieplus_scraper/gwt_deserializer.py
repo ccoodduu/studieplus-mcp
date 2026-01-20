@@ -16,11 +16,13 @@ class SkemaLesson:
     """Parsed lesson from GWT response."""
     lesson_id: int = 0
     subject: str = ""
+    class_name: str = ""  # Class name from aktivitet_list (e.g., "htxqr24")
     teachers: List[str] = field(default_factory=list)
     rooms: List[str] = field(default_factory=list)
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     note: str = ""
+    homework: str = ""  # Homework text (from SkemaNote2 containing "Lektier")
     has_homework: bool = False
     has_note: bool = False
     has_files: bool = False
@@ -97,6 +99,21 @@ class GWTDeserializer:
             'dk.uddata.model.skema.SkemaTools$FravaStatus': self._deserialize_enum,
             'dk.uddata.model.skema.SkemaTools$RegModel': self._deserialize_enum,
             'dk.uddata.model.skema.SkemaTools$RegStatus': self._deserialize_enum,
+
+            # Assignment types (Opgaver)
+            'dk.uddata.model.opgave.Aflevering': self._deserialize_aflevering,
+            'dk.uddata.model.opgave.OpgaveElev': self._deserialize_opgave_elev,
+            'dk.uddata.model.opgave.AfleveringBedoemmelse': self._deserialize_aflevering_bedoemmelse,
+            'dk.uddata.model.opgave.AfleveringStatus': self._deserialize_enum,
+            'dk.uddata.model.opgave.BedoemmelsesForm': self._deserialize_enum,
+
+            # User types needed for assignments
+            'dk.uddata.model.bruger.Medarbejder': self._deserialize_bruger_medarbejder,
+            'dk.uddata.model.bruger.Elev': self._deserialize_bruger_elev,
+            'dk.uddata.gwt.comm.shared.user.RolleType': self._deserialize_enum,
+
+            # Other assignment-related types
+            'dk.uddata.model.undervisningsplan.UndervisningsforloebResume': self._deserialize_undervisningsforloeb_resume,
         }
 
     def _parse_response(self):
@@ -153,7 +170,10 @@ class GWTDeserializer:
         but the original source_clean.js shows it's a SINGLE pop.
         """
         val = self._pop()
-        if val > 0 and val <= len(self.strings):
+        # Ensure val is an integer for indexing
+        if isinstance(val, float):
+            val = int(val)
+        if isinstance(val, int) and val > 0 and val <= len(self.strings):
             return self.strings[val - 1]
         return None
 
@@ -191,6 +211,13 @@ class GWTDeserializer:
         // deserialize and cache
         """
         b = self._pop()
+
+        # Ensure b is an integer for comparisons and indexing
+        if isinstance(b, float):
+            b = int(b)
+
+        if not isinstance(b, int):
+            return None
 
         if b < 0:
             # Back-reference to previously deserialized object
@@ -398,13 +425,52 @@ class GWTDeserializer:
         return {'_class': 'enum', 'ordinal': ordinal}
 
     def _deserialize_skema_note(self) -> dict:
-        """Deserialize SkemaNote2."""
-        a = self._pop()  # int (note_id?)
-        b = self._read_string()  # text?
-        c = self._pop()  # int
-        d = self._read_string()  # html?
-        e = self._read_string()  # plain?
-        return {'id': a, 'text': b, 'html': d, 'plain': e}
+        """
+        Deserialize SkemaNote2 (hAg function).
+
+        Fields (16 total):
+        b.a = int
+        b.b = string
+        b.c = int
+        b.d = boolean
+        b.e = string (plain text for homework)
+        b.f = string (html content for homework)
+        b.g = string
+        b.i = string
+        b.j = object (type 24)
+        b.k = string
+        b.n = object (type 24)
+        b.o = object (type 7 = UDate)
+        b.p = object (type 24)
+        b.q = int
+        b.r = int
+        b.s = string
+        """
+        a = self._pop()           # int
+        b = self._read_string()   # string
+        c = self._pop()           # int
+        d = self._read_bool()     # boolean
+        e = self._read_string()   # string - PLAIN TEXT (homework text!)
+        f = self._read_string()   # string - HTML (homework html!)
+        g = self._read_string()   # string
+        i = self._read_string()   # string
+        j = self._read_object()   # object (type 24)
+        k = self._read_string()   # string
+        n = self._read_object()   # object (type 24)
+        o = self._read_object()   # object (type 7 = UDate)
+        p = self._read_object()   # object (type 24)
+        q = self._pop()           # int
+        r = self._pop()           # int
+        s = self._read_string()   # string
+
+        return {
+            '_class': 'SkemaNote2',
+            'id': a,
+            'class_name': b,   # Class name (e.g., "htxqr24")
+            'html': e,         # HTML content (field e)
+            'plain_text': f,   # Plain text content (field f)
+            'date': o,         # UDate
+        }
 
     def _deserialize_aarstyp(self) -> dict:
         """
@@ -581,8 +647,15 @@ class GWTDeserializer:
         """
         lesson = SkemaLesson()
 
-        # b.a = aktivitetList (ArrayList)
+        # b.a = aktivitetList (ArrayList) - contains class info
         aktivitet_list = self._read_object()
+
+        # Extract class_name from aktivitet_list
+        if isinstance(aktivitet_list, list):
+            for akt in aktivitet_list:
+                if isinstance(akt, dict) and akt.get('d'):
+                    lesson.class_name = akt['d']
+                    break
 
         # b.c = bemerkning (string)
         bemerkning = self._read_string()
@@ -716,6 +789,561 @@ class GWTDeserializer:
             lesson.note = bemerkning
 
         return lesson
+
+    # ==================== ASSIGNMENT DESERIALIZERS ====================
+
+    def _deserialize_aflevering(self) -> dict:
+        """
+        Deserialize Aflevering (bfd function - line 35522 in assignment_source_clean.js).
+
+        Fields (read in order):
+        b.a = Fic(a), type = UDate (submission datetime)
+        b.b = Fic(a), type 237 = AfleveringBedoemmelse (evaluation info)
+        b.c = pop int (container_id - used for RessourceService file lookup!)
+        b.d = Fic(a), type 149
+        b.e = Fic(a), type 210
+        b.f = Oic(a) - boolean
+        b.g = Oic(a) - boolean
+        b.i = Fic(a), type 43 (another UDate)
+        b.j = Fic(a), type 211 = OpgaveElev (contains assignment data!)
+        b.k = Fic(a), type 22
+        b.n = Fic(a), type 182 = AfleveringStatus
+        b.o = Oic(a) - boolean
+
+        Note: The container_id (field c) is the key ID used to fetch files via
+        RessourceService.findRessourcerPerContainer() with type OPGAVE.
+        """
+        a = self._read_object()      # UDate = submission datetime
+        b = self._read_object()      # type 237 = AfleveringBedoemmelse
+        c = self._pop()              # int = container_id (KEY ID for files!)
+        d = self._read_object()      # type 149
+        e = self._read_object()      # type 210
+        f = self._read_bool()        # boolean
+        g = self._read_bool()        # boolean
+        i = self._read_object()      # type 43 = another UDate
+        j = self._read_object()      # type 211 = OpgaveElev - THE IMPORTANT ONE!
+        k = self._read_object()      # type 22
+        n = self._read_object()      # type 182 = AfleveringStatus
+        o = self._read_bool()        # boolean
+
+        # a = submission_date (UDate) - when the assignment was submitted
+        # b = bedoemmelse (evaluation/grading info)
+        # c = container_id - used for file lookup via RessourceService
+        # j = OpgaveElev - contains subject, title, hours, deadline
+        # n = status (AfleveringStatus enum)
+        return {
+            '_class': 'Aflevering',
+            'opgave_elev': j,  # This is where subject, title, hours, deadline are
+            'submission_date': a,  # Field a = submission datetime (UDate)
+            'submitted': a is not None and isinstance(a, datetime),  # True if assignment has been submitted
+            'status': n,  # AfleveringStatus enum (ordinal: 0=AABEN, 1=LAAST, 2=RETTET, etc.)
+            'bedoemmelse': b,  # AfleveringBedoemmelse with evaluation info
+            'container_id': c,  # Used for fetching files via RessourceService
+        }
+
+    def _deserialize_opgave_elev(self) -> dict:
+        """
+        Deserialize OpgaveElev (ehd function - line 41046 in assignment_source_clean.js).
+
+        This contains the actual assignment information we need:
+        - subject (b.A)
+        - title (b.v)
+        - budget_hours (b.n)
+        - spent_hours (b.o)
+        - week (b.r)
+        - deadline (b.D)
+        - start_date (b.C)
+
+        Fields read in order:
+        hhd(b, Fic(a), 10)    -> b.f = object
+        ihd(b, pop)           -> b.g = int
+        jhd(b, Mic(a, pop))   -> b.i = string
+        khd(b, Fic(a), 120)   -> b.j = object
+        lhd(b, Mic(a, pop))   -> b.k = string
+        mhd(b, Pic(a))        -> b.n = float (BUDGET HOURS)
+        nhd(b, Pic(a))        -> b.o = float (SPENT HOURS)
+        ohd(b, Fic(a), 10)    -> b.p = object
+        phd(b, Fic(a), 10)    -> b.q = object
+        qhd(b, pop)           -> b.r = int (WEEK)
+        rhd(b, Fic(a), 112)   -> b.s = object
+        shd(b, pop)           -> b.t = int
+        thd(b, pop)           -> b.u = int
+        uhd(b, Mic(a, pop))   -> b.v = string (TITLE)
+        vhd(b, Oic(a))        -> b.w = boolean
+        whd(b, Mic(a, pop))   -> b.A = string (SUBJECT)
+        xhd(b, Fic(a), 130)   -> b.B = object
+        yhd(b, Fic(a), 43)    -> b.C = object (START DATE)
+        zhd(b, Fic(a), 43)    -> b.D = object (DEADLINE)
+        Ahd(b, Oic(a))        -> b.F = boolean
+        """
+        f = self._read_object()      # type 10
+        g = self._pop()              # int
+        i = self._read_string()      # string
+        j = self._read_object()      # type 120
+        k = self._read_string()      # string
+        n = float(self._pop())       # BUDGET HOURS (Pic = Number = float)
+        o = float(self._pop())       # SPENT HOURS (Pic = Number = float)
+        p = self._read_object()      # type 10
+        q = self._read_object()      # type 10
+        r = self._pop()              # WEEK number
+        s = self._read_object()      # type 112
+        t = self._pop()              # int
+        u = self._pop()              # int
+        v = self._read_string()      # TITLE
+        w = self._read_bool()        # boolean
+        A = self._read_string()      # SUBJECT
+        B = self._read_object()      # type 130
+        C = self._read_object()      # START DATE (UDate)
+        D = self._read_object()      # DEADLINE (UDate)
+        F = self._read_bool()        # boolean
+
+        return {
+            '_class': 'OpgaveElev',
+            'opgave_id': g,  # b.g = OpgaveElev ID (used for getAflevering call)
+            'subject': v,  # Data shows v contains subject (e.g., "Matematik")
+            'title': A,    # Data shows A contains title (e.g., "Aflevering 4, 1.g")
+            'budget_hours': n,
+            'spent_hours': o,
+            'week': r,
+            'start_date': C,  # b.C = UDate (often null)
+            'deadline': f,    # b.f = deadline shown in UI (lvc(b.f) in vQc line 46139)
+            'class_name': i,  # i = class name like "htxqr24"
+            'description': k,  # k = description HTML
+        }
+
+    def _deserialize_aflevering_bedoemmelse(self) -> dict:
+        """
+        Deserialize AfleveringBedoemmelse (Ced function - line 28976).
+
+        Fed(b, pop)           -> b.a = int
+        Ged(b, Fic(a), 43)    -> b.b = object (UDate?)
+        Hed(b, Mic(a, pop))   -> b.c = string
+        Ied(b, Mic(a, pop))   -> b.d = string
+        Jed(b, pop)           -> b.e = int
+        Ked(b, Fic(a), 10)    -> b.f = object
+        Led(b, Fic(a), 112)   -> b.g = object
+        """
+        a = self._pop()              # int
+        b = self._read_object()      # type 43 (UDate)
+        c = self._read_string()      # string
+        d = self._read_string()      # string (karakter/grade?)
+        e = self._pop()              # int
+        f = self._read_object()      # type 10
+        g = self._read_object()      # type 112
+
+        return {
+            '_class': 'AfleveringBedoemmelse',
+            'id': a,
+            'date': b,
+            'grade': d,
+        }
+
+    def _deserialize_bruger_base(self) -> dict:
+        """
+        Deserialize Bruger base class (U7c function - line 43596).
+
+        This is the parent class for Medarbejder and Elev.
+        """
+        W7c = self._read_object()    # type 508
+        X7c = self._read_object()    # type 43 (UDate)
+        Y7c = self._read_string()    # string
+        Z7c = self._read_object()    # object (wqb)
+        dollar7c = self._read_string()  # string
+        _7c = self._read_string()    # string
+        a8c = self._read_object()    # type 10
+        b8c = self._read_string()    # string
+        c8c = self._read_string()    # string
+        d8c = self._read_object()    # type 43 (UDate)
+        e8c = self._read_string()    # string
+        f8c = self._read_string()    # string
+        g8c = self._read_object()    # object (wqb)
+        h8c = self._read_object()    # object (wqb)
+        i8c = self._read_object()    # object (wqb)
+        j8c = self._read_object()    # object (wqb)
+        k8c = self._read_object()    # type 10
+        l8c = self._read_object()    # type 201
+        m8c = self._read_object()    # type 10
+        n8c = self._read_object()    # type 10
+        o8c = self._read_string()    # string
+        p8c = self._read_string()    # string
+        q8c = self._read_string()    # string
+        pb = self._read_string()     # string (rolle/pb)
+
+        return {
+            'initials': b8c,
+            'name': Y7c,
+            'rolle': pb,
+        }
+
+    def _deserialize_bruger_base(self) -> dict:
+        """
+        Deserialize Bruger base class (U7c function - line 43596).
+
+        U7c reads 24 fields total.
+        """
+        W7c = self._read_object()    # 1. Fic (type 508)
+        X7c = self._read_object()    # 2. Fic (type 43 - UDate)
+        Y7c = self._read_string()    # 3. Mic (string)
+        Z7c = self._read_object()    # 4. Fic (wqb)
+        dollar_7c = self._read_string()  # 5. Mic (string)
+        _7c = self._read_string()    # 6. Mic (string)
+        a8c = self._read_object()    # 7. Fic (type 10 - Boolean)
+        b8c = self._read_string()    # 8. Mic (string)
+        c8c = self._read_string()    # 9. Mic (string - initials?)
+        d8c = self._read_object()    # 10. Fic (type 43 - UDate)
+        e8c = self._read_string()    # 11. Mic (string - name)
+        f8c = self._read_string()    # 12. Mic (string)
+        g8c = self._read_object()    # 13. Fic (wqb)
+        h8c = self._read_object()    # 14. Fic (wqb)
+        i8c = self._read_object()    # 15. Fic (wqb)
+        j8c = self._read_object()    # 16. Fic (wqb)
+        k8c = self._read_object()    # 17. Fic (type 10)
+        l8c = self._read_object()    # 18. Fic (type 201)
+        m8c = self._read_object()    # 19. Fic (type 10)
+        n8c = self._read_object()    # 20. Fic (type 10)
+        o8c = self._read_string()    # 21. Mic (string)
+        p8c = self._read_string()    # 22. Mic (string)
+        q8c = self._read_string()    # 23. Mic (string)
+        pb = self._read_string()     # 24. Mic (string) - b.pb
+
+        return {
+            'name': e8c or '',
+            'initials': c8c or '',
+        }
+
+    def _deserialize_bruger_medarbejder(self) -> dict:
+        """
+        Deserialize Medarbejder (c9c function - line 22738).
+
+        f9c(b, Fic(a))        -> b.xx = object (wqb)
+        g9c(b, pop)           -> b.yy = int
+        h9c(b, pop)           -> b.zz = int
+        i9c(b, Mic(a, pop))   -> b.aa = string
+        U7c(a, b)             -> Bruger base class (15 fields)
+        """
+        f9c = self._read_object()    # object (wqb)
+        g9c = self._pop()            # int
+        h9c = self._pop()            # int
+        i9c = self._read_string()    # string (initialer?)
+
+        # Read Bruger base class fields
+        base = self._deserialize_bruger_base()
+
+        return {
+            '_class': 'Medarbejder',
+            'initialer': i9c or base.get('initials', ''),
+            'name': base.get('name', ''),
+        }
+
+    def _deserialize_bruger_elev(self) -> dict:
+        """
+        Deserialize Elev (G8c function - line 38596).
+
+        This reads the Elev-specific fields followed by inheritance chain.
+        J8c(b, Fic(a))        -> b.xx = object (wqb)
+        K8c(b, Fic(a), 10)    -> b.yy = object
+        L8c(b, Oic(a))        -> b.zz = boolean (via Oic)
+        M8c(b, Fic(a), 43)    -> b.aa = object (UDate)
+        N8c(b, Fic(a), 43)    -> b.ab = object (UDate)
+        O8c(b, Fic(a))        -> b.ac = object (wqb)
+        P8c(b, Oic(a))        -> b.ad = boolean (via Oic)
+        Q8c(b, Fic(a), 10)    -> b.ae = object
+        R8c(b, Mic(a, pop))   -> b.af = string (elevnr?)
+        S8c(b, Fic(a), 43)    -> b.ag = object (UDate)
+        T8c(b, Mic(a, pop))   -> b.ah = string
+        U8c(b, Fic(a), 10)    -> b.ai = object
+        V8c(b, Oic(a))        -> b.aj = boolean
+        W8c(b, Mic(a, pop))   -> b.ak = string (klasse?)
+        X8c(b, Fic(a), 43)    -> b.al = object (UDate)
+        Then Y8c - Bruger inheritance through intermediate class
+        """
+        J8c = self._read_object()    # object (wqb)
+        K8c = self._read_object()    # type 10
+        L8c = self._read_bool()      # boolean (Oic)
+        M8c = self._read_object()    # type 43 (UDate)
+        N8c = self._read_object()    # type 43 (UDate)
+        O8c = self._read_object()    # object (wqb)
+        P8c = self._read_bool()      # boolean (Oic)
+        Q8c = self._read_object()    # type 10
+        R8c = self._read_string()    # string (elevnr)
+        S8c = self._read_object()    # type 43 (UDate)
+        T8c = self._read_string()    # string
+        U8c = self._read_object()    # type 10
+        V8c = self._read_bool()      # boolean
+        W8c = self._read_string()    # string (klasse)
+        X8c = self._read_object()    # type 43 (UDate)
+
+        # U7c (Bruger base - 15 fields) is called directly after X8c
+        base = self._deserialize_bruger_base()
+
+        return {
+            '_class': 'Elev',
+            'elevnr': R8c,
+            'klasse': W8c,
+            'name': base.get('name', ''),
+        }
+
+    def _deserialize_undervisningsforloeb_resume(self) -> dict:
+        """
+        Deserialize UndervisningsforloebResume (Szd function - line 19679).
+
+        Vzd(b, Mic(a, pop))   -> b.xx = string
+        Wzd(b, Fic(a), 43)    -> b.yy = object (UDate)
+        Xzd(b, Fic(a), 43)    -> b.zz = object (UDate)
+        """
+        title = self._read_string()  # string
+        start = self._read_object()  # type 43 (UDate)
+        end = self._read_object()    # type 43 (UDate)
+
+        return {
+            '_class': 'UndervisningsforloebResume',
+            'title': title,
+            'start': start,
+            'end': end,
+        }
+
+    def parse_assignments(self, debug: bool = False, only_open: bool = False) -> List[dict]:
+        """
+        Parse assignment (Aflevering) objects from GWT response.
+
+        Parses from the root ArrayList and extracts OpgaveElev data.
+
+        Args:
+            debug: Print debug info
+            only_open: If True, only return non-submitted assignments
+
+        Returns list of assignment dictionaries with:
+        - subject
+        - title
+        - budget_hours / spent_hours
+        - week
+        - deadline
+        - class_name
+        - submitted (bool)
+        - submission_date (str or empty)
+        """
+        # Reset position to start of data (read from end)
+        self.pos = len(self.data)
+        self.objects = []
+
+        # Parse root object (should be ArrayList of Aflevering)
+        try:
+            root = self._read_object()
+        except Exception as e:
+            if debug:
+                print(f"DEBUG: Error parsing root: {e}")
+            return []
+
+        if not isinstance(root, list):
+            if debug:
+                print(f"DEBUG: Root is not a list: {type(root)}")
+            return []
+
+        if debug:
+            print(f"DEBUG: Parsed {len(root)} Aflevering objects from root")
+
+        # Extract OpgaveElev from each Aflevering
+        assignments = []
+        for afl in root:
+            if not isinstance(afl, dict):
+                continue
+
+            # Check submission status
+            # submitted = True if submission_date exists
+            submitted = afl.get('submitted', False)
+
+            # Check status enum - AfleveringStatus (type 182):
+            # 0 = AABEN (Open), 1 = LAAST (Locked), 2 = RETTET (Graded), 3 = AFVIST, 4 = AFVISTRETTET
+            status = afl.get('status')
+            status_ordinal = status.get('ordinal') if isinstance(status, dict) else None
+            is_open_status = status_ordinal == 0 or status_ordinal is None  # AABEN or no status
+
+            # Check if teacher has graded/evaluated (bedoemmelse has a date)
+            bedoemmelse = afl.get('bedoemmelse')
+            has_evaluation = False
+            if isinstance(bedoemmelse, dict):
+                eval_date = bedoemmelse.get('date')
+                has_evaluation = eval_date is not None and eval_date != 0
+
+            # Filter if only_open is requested
+            # Assignment is "open" if: not submitted AND has open status AND not evaluated by teacher
+            if only_open and (submitted or not is_open_status or has_evaluation):
+                continue
+
+            # Get OpgaveElev from Aflevering.j field
+            opgave = afl.get('opgave_elev')
+            if not isinstance(opgave, dict) or opgave.get('_class') != 'OpgaveElev':
+                continue
+
+            # Format deadline
+            deadline_str = ''
+            deadline = opgave.get('deadline')
+            if isinstance(deadline, datetime):
+                deadline_str = deadline.strftime('%d.%m.%Y %H:%M')
+            elif isinstance(deadline, str):
+                deadline_str = deadline
+
+            # Format submission date
+            submission_date_str = ''
+            submission_date = afl.get('submission_date')
+            if isinstance(submission_date, datetime):
+                submission_date_str = submission_date.strftime('%d.%m.%Y %H:%M')
+
+            # Skip if no meaningful data
+            if not opgave.get('subject') and not opgave.get('title'):
+                continue
+
+            assignments.append({
+                'container_id': afl.get('container_id'),  # ID for RessourceService files
+                'subject': opgave.get('subject', ''),
+                'title': opgave.get('title', ''),
+                'description': opgave.get('description', ''),
+                'deadline': deadline_str,
+                'subject_budget_hours': str(opgave.get('budget_hours', '')),
+                'hours_spent': str(opgave.get('spent_hours', '')),
+                'class': opgave.get('class_name', ''),
+                'week': str(opgave.get('week', '')),
+                'submitted': submitted,
+                'submission_date': submission_date_str,
+            })
+
+            if debug:
+                print(f"DEBUG: Extracted: {opgave.get('subject')} - {opgave.get('title')} (submitted={submitted})")
+
+        return assignments
+
+    def parse_single_aflevering(self, debug: bool = False) -> dict:
+        """
+        Parse a single Aflevering from getAflevering response.
+
+        Returns dict with all assignment details including container_id for files.
+        """
+        self.pos = len(self.data)
+        self.objects = []
+
+        try:
+            afl = self._read_object()
+        except Exception as e:
+            if debug:
+                print(f"DEBUG: Error parsing aflevering: {e}")
+            return {}
+
+        if not isinstance(afl, dict) or afl.get('_class') != 'Aflevering':
+            if debug:
+                print(f"DEBUG: Root is not Aflevering: {type(afl)}")
+            return {}
+
+        opgave = afl.get('opgave_elev')
+        if not isinstance(opgave, dict):
+            return {}
+
+        # Format dates
+        deadline_str = ''
+        deadline = opgave.get('deadline')
+        if isinstance(deadline, datetime):
+            deadline_str = deadline.strftime('%d.%m.%Y %H:%M')
+
+        submission_date_str = ''
+        submission_date = afl.get('submission_date')
+        if isinstance(submission_date, datetime):
+            submission_date_str = submission_date.strftime('%d.%m.%Y %H:%M')
+
+        # Get container_id from Aflevering (used for file lookup)
+        # This is the 'c' field in the raw Aflevering
+        container_id = afl.get('container_id', 0)
+
+        return {
+            'subject': opgave.get('subject', ''),
+            'title': opgave.get('title', ''),
+            'description': opgave.get('description', ''),
+            'deadline': deadline_str,
+            'subject_budget_hours': str(opgave.get('budget_hours', '')),
+            'hours_spent': str(opgave.get('spent_hours', '')),
+            'class': opgave.get('class_name', ''),
+            'week': str(opgave.get('week', '')),
+            'submitted': afl.get('submitted', False),
+            'submission_date': submission_date_str,
+            'container_id': container_id,
+            'status': afl.get('status'),
+            'bedoemmelse': afl.get('bedoemmelse'),
+        }
+
+    def parse_assignments_direct(self, debug: bool = False) -> List[dict]:
+        """
+        Parse assignments by directly finding and deserializing OpgaveElev objects.
+
+        This approach finds all OpgaveElev markers in the data and deserializes
+        each one from that position, extracting the fields we need.
+        """
+        assignments = []
+
+        # Find OpgaveElev class marker
+        opgave_marker = None
+        for i, s in enumerate(self.strings):
+            if s.startswith('dk.uddata.model.opgave.OpgaveElev/'):
+                opgave_marker = i + 1
+                break
+
+        if opgave_marker is None:
+            if debug:
+                print("DEBUG: OpgaveElev not found in string table")
+            return assignments
+
+        if debug:
+            print(f"DEBUG: OpgaveElev marker = {opgave_marker}")
+
+        # Find all positions where OpgaveElev marker appears
+        positions = [i for i, v in enumerate(self.data) if v == opgave_marker]
+        if debug:
+            print(f"DEBUG: Found {len(positions)} OpgaveElev instances")
+
+        # Deserialize each OpgaveElev
+        for pos in positions:
+            try:
+                # Set position to just after the marker (marker was at pos, so pos+1)
+                self.pos = pos
+                self.objects = []  # Clear cache for each assignment
+
+                # Deserialize OpgaveElev fields
+                opgave = self._deserialize_opgave_elev()
+
+                # Format deadline
+                deadline_str = ''
+                deadline = opgave.get('deadline')
+                if isinstance(deadline, datetime):
+                    deadline_str = deadline.strftime('%d.%m.%Y %H:%M')
+
+                # Only add if we got meaningful data
+                if opgave.get('subject') or opgave.get('title'):
+                    assignments.append({
+                        'subject': opgave.get('subject', ''),
+                        'title': opgave.get('title', ''),
+                        'description': opgave.get('description', ''),
+                        'deadline': deadline_str,
+                        'subject_budget_hours': str(opgave.get('budget_hours', '')),
+                        'hours_spent': str(opgave.get('spent_hours', '')),
+                        'class': opgave.get('class_name', ''),
+                        'week': str(opgave.get('week', '')),
+                    })
+
+                    if debug:
+                        print(f"DEBUG: Parsed assignment at {pos}: {opgave.get('subject')} - {opgave.get('title')}")
+
+            except Exception as e:
+                if debug:
+                    print(f"DEBUG: Error at pos {pos}: {e}")
+                continue
+
+        # Remove duplicates (same subject + title)
+        seen = set()
+        unique = []
+        for a in assignments:
+            key = (a['subject'], a['title'])
+            if key not in seen:
+                seen.add(key)
+                unique.append(a)
+
+        return unique
 
     def scan_for_lessons(self, debug: bool = False) -> List[SkemaLesson]:
         """
@@ -888,14 +1516,86 @@ class GWTDeserializer:
 
         return lessons
 
+    def _parse_all_notes(self, debug: bool = False) -> List[dict]:
+        """Parse all SkemaNote2 objects from the response."""
+        notes = []
+
+        # Find SkemaNote2 class marker
+        note_marker = None
+        for i, s in enumerate(self.strings):
+            if 'SkemaNote2' in s:
+                note_marker = i + 1
+                break
+
+        if note_marker is None:
+            if debug:
+                print("DEBUG: SkemaNote2 not found in string table")
+            return notes
+
+        # Find all positions where SkemaNote2 marker appears
+        positions = [i for i, v in enumerate(self.data) if v == note_marker]
+        if debug:
+            print(f"DEBUG: Found {len(positions)} SkemaNote2 instances")
+
+        # Deserialize each one
+        for pos in positions:
+            try:
+                self.pos = pos
+                self.objects = []
+                note = self._deserialize_skema_note()
+                if note.get('plain_text') or note.get('html'):
+                    notes.append(note)
+                    if debug:
+                        print(f"DEBUG: Note at {pos}: date={note.get('date')}, text={str(note.get('plain_text', ''))[:50]}")
+            except Exception as e:
+                if debug:
+                    print(f"DEBUG: Error parsing note at pos {pos}: {e}")
+                continue
+
+        return notes
+
     def parse_lessons_direct(self, debug: bool = False) -> List[SkemaLesson]:
         """
         Parse lessons by finding all SkemaBegivenhed markers and deserializing directly.
 
         This bypasses the complex PersSkemaData wrapper structure while still using
         the correct stack-based deserializers for each SkemaBegivenhed object.
+
+        Also parses SkemaNote2 objects and attaches them to lessons by date + class.
+        The matching uses (date, class_name) to ensure homework is only attached
+        to the correct lesson, not all lessons on the same day.
         """
         lessons = []
+
+        # First, parse all notes
+        notes = self._parse_all_notes(debug=debug)
+        if debug:
+            print(f"DEBUG: Parsed {len(notes)} notes total")
+
+        # Group notes by (date, class_name) for robust matching
+        # Key: (date_str, class_name), Value: list of notes
+        notes_by_date_class = {}
+        for note in notes:
+            note_date = note.get('date')
+            note_class = note.get('class_name', '')
+            if note_date:
+                # Convert datetime to date string (YYYY-MM-DD)
+                if hasattr(note_date, 'strftime'):
+                    date_key = note_date.strftime('%Y-%m-%d')
+                else:
+                    date_key = str(note_date)[:10]
+
+                # Create key using both date and class_name
+                key = (date_key, note_class)
+                if key not in notes_by_date_class:
+                    notes_by_date_class[key] = []
+                notes_by_date_class[key].append(note)
+
+                if debug:
+                    print(f"DEBUG: Note indexed as ({date_key}, '{note_class}')")
+
+        if debug:
+            print(f"DEBUG: Notes grouped by (date, class): {list(notes_by_date_class.keys())}")
 
         # Find SkemaBegivenhed class marker
         skema_marker = None
@@ -921,9 +1621,32 @@ class GWTDeserializer:
                 self.objects = []  # Clear cache for each lesson
                 lesson = self._deserialize_skema_begivenhed()
                 if lesson.subject or lesson.rooms or lesson.teachers:
+                    # Attach notes to lesson by date + class_name (robust matching)
+                    if lesson.start_time:
+                        lesson_date = lesson.start_time.strftime('%Y-%m-%d')
+                        lesson_class = lesson.class_name or ''
+
+                        # Look for notes matching this lesson's date and class
+                        key = (lesson_date, lesson_class)
+                        if key in notes_by_date_class:
+                            for note in notes_by_date_class[key]:
+                                plain_text = note.get('plain_text', '')
+                                html_text = note.get('html', '')
+                                # Check if it's homework (contains "Lektier")
+                                if 'Lektier' in plain_text or 'Lektier' in str(html_text):
+                                    lesson.has_homework = True
+                                    lesson.homework = plain_text
+                                else:
+                                    # It's a note
+                                    lesson.has_note = True
+                                    if not lesson.note or lesson.note == lesson.subject:
+                                        lesson.note = plain_text or str(html_text)[:200]
+                                if debug:
+                                    print(f"DEBUG: Attached note to lesson {lesson.subject} ({lesson_class}) on {lesson_date}")
+
                     lessons.append(lesson)
                     if debug:
-                        print(f"DEBUG: Lesson at {pos}: {lesson.subject} | {lesson.rooms} | {lesson.teachers}")
+                        print(f"DEBUG: Lesson at {pos}: {lesson.subject} | class={lesson.class_name} | {lesson.rooms} | {lesson.teachers}")
             except Exception as e:
                 if debug:
                     print(f"DEBUG: Error at pos {pos}: {e}")
@@ -940,6 +1663,26 @@ def parse_schedule_response(response: str) -> List[SkemaLesson]:
     """
     parser = GWTDeserializer(response)
     return parser.parse_lessons_direct()
+
+
+def parse_assignments_response(response: str, debug: bool = False) -> List[dict]:
+    """Parse a StudiePlus assignments (Opgaver) GWT response.
+
+    Uses stack-based deserialization following the exact GWT deserializer logic
+    from assignment_source_clean.js.
+
+    Returns list of assignment dictionaries with:
+    - subject: Subject name (e.g., "Matematik")
+    - title: Assignment title
+    - description: Assignment description (HTML)
+    - deadline: Deadline as string (DD.MM.YYYY HH:MM)
+    - subject_budget_hours: Budgeted hours for subject
+    - hours_spent: Hours spent on assignment
+    - class: Class name (e.g., "htxqr24")
+    - week: Week number
+    """
+    parser = GWTDeserializer(response)
+    return parser.parse_assignments(debug=debug)
 
 
 # Backwards compatibility

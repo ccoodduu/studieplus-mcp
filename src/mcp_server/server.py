@@ -3,13 +3,39 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 from studieplus_scraper import api
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("Studie+ Homework Checker")
+# System instructions for LLMs using this MCP server
+SYSTEM_INSTRUCTIONS = """
+Du har adgang til en dansk elevs skoledata fra Studie+.
+
+VIGTIGE BEGREBER:
+- AFLEVERINGER = Formelle opgaver med deadlines (fra Opgaver-siden)
+- LEKTIER = Daglige lektier fra skemaet (blå felter i skemaet)
+- NOTER = Beskeder/info fra lærere i skemaet (grønne felter)
+
+START HER:
+- "Hvad har jeg i dag/i morgen?" → get_day_overview(day_offset=0 eller 1)
+- "Hvad skal jeg aflevere?" → get_assignments()
+- "Overblik over ugen?" → get_week_overview()
+
+PARAMETRE:
+- day_offset: 0=i dag, 1=i morgen, -1=i går, 2=i overmorgen, osv.
+- week_offset: 0=denne uge, 1=næste uge, -1=sidste uge
+
+TYPISKE SPØRGSMÅL:
+- "Hvilket lokale skal jeg møde i?" → get_day_overview(), tjek first_lesson.room
+- "Hvornår starter jeg?" → get_day_overview(), tjek first_lesson.time
+- "Har jeg lektier for?" → get_day_overview(), tjek homework listen
+- "Hvad har jeg misset?" → get_week_overview(week_offset=-1)
+"""
+
+mcp = FastMCP("Studie+ Skole Assistent", instructions=SYSTEM_INSTRUCTIONS)
 
 
 # Danish weekday and month names for formatting
@@ -82,248 +108,187 @@ def clean_for_llm(data: dict | list) -> dict | list:
     return data
 
 
-# ==================== ASSIGNMENTS (Afleveringer fra Opgaver-siden) ====================
+# ==================== MAIN TOOLS ====================
 
 @mcp.tool()
-async def get_assignments() -> dict:
+async def get_day_overview(day_offset: int = 0) -> dict:
     """
-    Get all assignments (afleveringer) from the Opgaver page in Studie+.
+    Få overblik over en bestemt dag: skema, lektier, noter, og afleveringer.
 
-    These are formal assignments with deadlines, not daily homework from schedule.
-
-    Returns a dictionary with:
-    - current_time: Current date and time for Claude's context
-    - count: Total number of assignments
-    - assignments: List of assignments with subject, title, deadline, hours, etc.
-    """
-    result = await api.get_all_assignments()
-
-    # Add current time context for Claude
-    result['current_time'] = format_datetime_for_claude()
-
-    # Format deadlines in all assignments
-    for assignment in result.get('assignments', []):
-        if assignment.get('deadline'):
-            assignment['deadline'] = format_date_string(assignment['deadline'], include_time=True)
-
-    return result
-
-
-@mcp.tool()
-async def get_upcoming_assignments(days: int = 7) -> dict:
-    """
-    Get assignments (afleveringer) with deadlines within the next N days.
+    Brug denne til spørgsmål som:
+    - "Hvad har jeg i dag?" (day_offset=0)
+    - "Har jeg lektier til i morgen?" (day_offset=1)
+    - "Hvilket lokale skal jeg møde i?" (day_offset=0, tjek first_lesson)
+    - "Hvornår starter jeg i morgen?" (day_offset=1, tjek first_lesson)
 
     Args:
-        days: Number of days to look ahead (default: 7)
+        day_offset: Dage fra i dag (0=i dag, 1=i morgen, -1=i går)
 
-    Returns assignments due within the specified timeframe.
+    Returns:
+        - date: Dato (YYYY-MM-DD)
+        - weekday: Ugedag på dansk
+        - lessons: Liste af lektioner med tid, fag, lærer, lokale
+        - homework: Lektioner med lektier
+        - notes: Lektioner med noter
+        - assignments_due: Afleveringer med deadline den dag
+        - first_lesson: Første lektion (tid, lokale, fag)
+        - last_lesson: Sidste lektion (tid, lokale, fag)
     """
-    result = await api.get_upcoming_assignments(days=days)
+    result = await api.get_day_overview(day_offset=day_offset)
 
-    # Add current time context for Claude
+    # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
-    # Format deadlines in all assignments
-    for assignment in result.get('assignments', []):
-        if assignment.get('deadline'):
-            assignment['deadline'] = format_date_string(assignment['deadline'], include_time=True)
+    # Format date
+    if result.get('date'):
+        result['date_formatted'] = format_date_string(result['date'], include_time=False)
 
-    return result
+    return clean_for_llm(result)
 
 
 @mcp.tool()
-async def get_assignments_by_subject(subject: str) -> dict:
+async def get_week_overview(week_offset: int = 0) -> dict:
     """
-    Get assignments (afleveringer) for a specific subject.
+    Få overblik over en hel uge: skema, lektier, noter, og afleveringer.
+
+    Brug denne til spørgsmål som:
+    - "Hvad har jeg i denne uge?" (week_offset=0)
+    - "Hvad har jeg misset sidste uge?" (week_offset=-1)
+    - "Overblik over næste uge?" (week_offset=1)
 
     Args:
-        subject: The subject name (e.g., "Matematik", "Dansk", "Engelsk")
+        week_offset: Uger fra nu (0=denne uge, 1=næste uge, -1=sidste uge)
 
-    Returns assignments filtered by subject.
+    Returns:
+        - week: Uge nummer og år (f.eks. "4/2026")
+        - days: Liste af dage med lektioner
+        - homework_count: Antal lektioner med lektier
+        - notes_count: Antal lektioner med noter
+        - assignments: Afleveringer med deadline i ugen
     """
-    result = await api.get_assignments_by_subject(subject=subject)
+    result = await api.get_week_overview(week_offset=week_offset)
 
-    # Add current time context for Claude
+    # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
-    # Format deadlines in all assignments
+    # Format dates in days
+    for day in result.get('days', []):
+        if day.get('date'):
+            day['date_formatted'] = format_date_string(day['date'], include_time=False)
+
+    return clean_for_llm(result)
+
+
+@mcp.tool()
+async def get_assignments(
+    include_submitted: bool = False,
+    days_ahead: Optional[int] = None,
+    subject: Optional[str] = None
+) -> dict:
+    """
+    Hent afleveringer (formelle opgaver med deadlines).
+
+    Brug denne til spørgsmål som:
+    - "Hvad skal jeg aflevere?" (ingen filtre)
+    - "Hvad er min næste aflevering?" (days_ahead=30, tag første)
+    - "Har jeg dansk afleveringer?" (subject="Dansk")
+    - "Vis alle mine afleveringer" (include_submitted=True)
+
+    Args:
+        include_submitted: Inkluder allerede afleverede (default: kun åbne)
+        days_ahead: Kun afleveringer med deadline inden for N dage
+        subject: Filtrer på fag (f.eks. "Dansk", "Matematik")
+
+    Returns:
+        - count: Antal afleveringer
+        - assignments: Liste med subject, title, deadline, submitted, row_index
+    """
+    result = await api.get_assignments_filtered(
+        include_submitted=include_submitted,
+        days_ahead=days_ahead,
+        subject=subject
+    )
+
+    # Add current time context
+    result['current_time'] = format_datetime_for_claude()
+
+    # Format deadlines
     for assignment in result.get('assignments', []):
         if assignment.get('deadline'):
-            assignment['deadline'] = format_date_string(assignment['deadline'], include_time=True)
+            assignment['deadline_formatted'] = format_date_string(
+                assignment['deadline'], include_time=True
+            )
 
-    return result
+    return clean_for_llm(result)
 
 
 @mcp.tool()
 async def get_assignment_details(row_index: str) -> dict:
     """
-    Get detailed information about a specific assignment (aflevering).
+    Hent detaljer om en specifik aflevering inkl. beskrivelse og filer.
+
+    Brug row_index fra get_assignments() resultatet.
 
     Args:
-        row_index: The row index of the assignment (from the 'row_index' field)
+        row_index: Afleveringens row_index (fra get_assignments)
 
-    Returns detailed information including description, files, and submission status.
+    Returns:
+        - assignment_title: Titel
+        - subject: Fag
+        - description: Beskrivelse (HTML)
+        - deadline: Afleveringsfrist
+        - files: Liste af filer med navn og URL
+        - submission_status: Afleveret/Ikke afleveret
     """
     result = await api.get_assignment_detail(row_index=row_index)
 
-    # Add current time context for Claude
+    # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
-    # Format deadline if present
+    # Format deadline
     if result.get('deadline'):
-        result['deadline'] = format_date_string(result['deadline'], include_time=True)
+        result['deadline_formatted'] = format_date_string(result['deadline'], include_time=True)
+
+    return clean_for_llm(result)
+
+
+@mcp.tool()
+async def get_lesson_files(lesson_id: int) -> dict:
+    """
+    Hent filer fra en lektion med download URLs.
+
+    Brug lesson_id fra get_day_overview() eller get_week_overview().
+
+    Args:
+        lesson_id: Lektionens ID (fra lessons i day/week overview)
+
+    Returns:
+        - lesson_id: Lektionens ID
+        - count: Antal filer
+        - files: Liste med name, id, url (signeret S3 URL, gyldig ~5 min)
+    """
+    result = await api.get_lesson_files(lesson_id=lesson_id)
+
+    # Add current time context
+    result['current_time'] = format_datetime_for_claude()
 
     return result
-
-
-
-# ==================== HOMEWORK (Lektier fra skemaet) ====================
-
-@mcp.tool()
-async def get_schedule(week_offset: int = 0) -> dict:
-    """
-    Get complete weekly schedule with all lessons grouped by day.
-
-    Note: For most use cases, prefer get_homework_overview() or get_notes() which automatically
-    handle multiple weeks. This function is useful when you need the full schedule for a specific week.
-
-    Args:
-        week_offset: Weeks from current (0=this week, 1=next week, -1=last week)
-
-    Returns a dictionary with:
-    - current_time: Current date and time for Claude's context
-    - week: Week number and year (e.g., "48/2025")
-    - schedule: List of days, each with date, day name, and lessons
-    """
-    result = await api.get_full_schedule(week_offset=week_offset)
-
-    # Add current time context for Claude
-    result['current_time'] = format_datetime_for_claude()
-
-    # Format dates in all days
-    for day in result.get('schedule', []):
-        if day.get('date'):
-            day['date'] = format_date_string(day['date'], include_time=False)
-
-    # Clean up false booleans and empty strings for LLM readability
-    return clean_for_llm(result)
-
-
-@mcp.tool()
-async def get_homework_overview(days_ahead: int = 7) -> dict:
-    """
-    Get daily homework (lektier) and notes from the schedule (skema).
-
-    This extracts homework and notes directly from the colored lesson boxes in the schedule.
-    These are NOT formal assignments/afleveringer - use get_assignments() for those.
-
-    - Blue lessons indicate homework
-    - Green lessons indicate notes/information
-
-    Automatically fetches from multiple weeks if needed.
-
-    Args:
-        days_ahead: How many days to look ahead from today (default: 7, max: 30)
-
-    Returns a dictionary with:
-    - current_time: Current date and time for Claude's context
-    - count: Number of lessons with homework or notes
-    - lessons: List of lessons with homework/notes text (includes date, weekday, time, subject, teacher, room)
-    """
-    result = await api.get_homework_and_notes(
-        days_ahead=days_ahead,
-        include_details=True
-    )
-
-    # Add current time context for Claude
-    result['current_time'] = format_datetime_for_claude()
-
-    # Format dates in all lessons
-    for lesson in result.get('lessons', []):
-        if lesson.get('date'):
-            lesson['date'] = format_date_string(lesson['date'], include_time=False)
-
-    # Clean up false booleans and empty strings for LLM readability
-    return clean_for_llm(result)
-
-
-@mcp.tool()
-async def get_notes(days_ahead: int = 7) -> dict:
-    """
-    Get notes (noter) from lessons in the schedule.
-
-    This extracts notes directly from the green lesson boxes in the schedule.
-    Green lessons indicate notes/information from teachers.
-
-    Use this to find teacher notes, announcements, or information about lessons.
-
-    Automatically fetches from multiple weeks if needed.
-
-    Args:
-        days_ahead: How many days to look ahead from today (default: 7, max: 30)
-
-    Returns a dictionary with:
-    - current_time: Current date and time for Claude's context
-    - count: Number of lessons with notes
-    - lessons: List of lessons with notes (includes date, weekday, time, subject, teacher, room, note text)
-    """
-    result = await api.get_notes_overview(
-        days_ahead=days_ahead,
-        include_details=True
-    )
-
-    # Add current time context for Claude
-    result['current_time'] = format_datetime_for_claude()
-
-    # Format dates in all lessons
-    for lesson in result.get('lessons', []):
-        if lesson.get('date'):
-            lesson['date'] = format_date_string(lesson['date'], include_time=False)
-
-    # Clean up false booleans and empty strings for LLM readability
-    return clean_for_llm(result)
-
-
-@mcp.tool()
-async def get_lesson_details(date: str, time: str) -> dict:
-    """
-    Get detailed information for a specific lesson including full homework text, notes, and files.
-
-    Args:
-        date: ISO format date (YYYY-MM-DD, e.g., "2025-11-10")
-        time: Time range (HH:MM-HH:MM, e.g., "08:15-09:15")
-
-    Returns detailed lesson information including homework text, notes, and file attachments.
-    """
-    result = await api.get_lesson_detail(date=date, time=time)
-
-    # Add current time context for Claude
-    result['current_time'] = format_datetime_for_claude()
-
-    # Format date if present
-    if result.get('date'):
-        result['date'] = format_date_string(result['date'], include_time=False)
-
-    # Clean up false booleans and empty strings for LLM readability
-    return clean_for_llm(result)
 
 
 @mcp.tool()
 async def download_lesson_file(file_url: str, file_name: str, output_dir: str = "./downloads") -> dict:
     """
-    Download a file from a lesson to the downloads folder.
+    Download en fil fra en lektion til downloads mappen.
 
     Args:
-        file_url: URL of the file to download
-        file_name: Name of the file
-        output_dir: Directory to save the file (default: ./downloads)
+        file_url: URL til filen (fra get_lesson_files)
+        file_name: Filens navn
+        output_dir: Mappe at gemme i (default: ./downloads)
 
-    Returns a dictionary with:
-    - success: Whether the download was successful
-    - file_path: Path to the downloaded file
-    - file_name: Name of the downloaded file
-    - file_size: Size of the file in bytes
+    Returns:
+        - success: Om download lykkedes
+        - file_path: Sti til den downloadede fil
+        - file_size: Filstørrelse i bytes
     """
     result = await api.download_file(
         file_url=file_url,
@@ -331,7 +296,7 @@ async def download_lesson_file(file_url: str, file_name: str, output_dir: str = 
         output_dir=output_dir
     )
 
-    # Add current time context for Claude
+    # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
     return result
@@ -340,74 +305,27 @@ async def download_lesson_file(file_url: str, file_name: str, output_dir: str = 
 @mcp.tool()
 async def load_lesson_file(file_url: str, file_name: str) -> dict:
     """
-    Load a file from a lesson and return its content for Claude to read.
+    Indlæs en fil og returner indholdet så du kan læse det.
 
     Args:
-        file_url: URL of the file to load
-        file_name: Name of the file
+        file_url: URL til filen (fra get_lesson_files)
+        file_name: Filens navn
 
-    Returns a dictionary with:
-    - success: Whether the load was successful
-    - file_name: Name of the file
-    - content: File content (text or base64 encoded)
-    - content_type: MIME type of the file
-    - size: Size of the file in bytes
-    - is_text: Whether the file is text-based
+    Returns:
+        - success: Om indlæsning lykkedes
+        - content: Filindhold (tekst eller base64)
+        - content_type: MIME type
+        - is_text: Om filen er tekst-baseret
     """
     result = await api.load_file(
         file_url=file_url,
         file_name=file_name
     )
 
-    # Add current time context for Claude
+    # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
     return result
-
-
-@mcp.tool()
-async def get_lesson_files(lesson_id: int) -> dict:
-    """
-    Get files attached to a specific lesson with download URLs.
-
-    Use this to find and download files from a lesson. First get the schedule
-    to find the lesson_id, then call this function to get the file list.
-
-    Args:
-        lesson_id: The lesson ID (from the 'lesson_id' field in schedule response)
-
-    Returns a dictionary with:
-    - lesson_id: The lesson ID
-    - count: Number of files
-    - files: List of files with name, id, and download URL
-
-    Note: Download URLs are signed S3 URLs valid for ~5 minutes.
-    """
-    result = await api.get_lesson_files(lesson_id=lesson_id)
-
-    # Add current time context for Claude
-    result['current_time'] = format_datetime_for_claude()
-
-    return result
-
-
-@mcp.tool()
-async def get_schedule_homework() -> dict:
-    """
-    DEPRECATED: Use get_homework_overview() instead for better functionality.
-
-    Get homework and notes from the schedule (skema) for the current week.
-
-    This extracts homework and notes directly from the colored lesson boxes in the schedule.
-    - Blue lessons indicate homework
-    - Green lessons indicate notes/information
-
-    Returns a dictionary with:
-    - lessons: List of lessons with homework or notes
-    - count: Total number of lessons with content
-    """
-    # Redirect to the new API-based function
-    return await get_homework_overview(days_ahead=7)
 
 
 if __name__ == "__main__":
