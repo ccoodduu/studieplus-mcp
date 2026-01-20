@@ -8,7 +8,7 @@ from typing import Optional
 sys.path.append(str(Path(__file__).parent.parent))
 
 from studieplus_scraper import api
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 # System instructions for LLMs using this MCP server
 SYSTEM_INSTRUCTIONS = """
@@ -329,4 +329,11 @@ async def load_lesson_file(file_url: str, file_name: str) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    # Support both stdio (Claude Desktop) and SSE (Docker/Pi) transports
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    port = int(os.getenv("MCP_PORT", "8101"))
+
+    if transport == "sse":
+        mcp.run(transport="sse", port=port)
+    else:
+        mcp.run()  # Default: stdio for Claude Desktop
