@@ -3,11 +3,21 @@ import asyncio
 import re
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
-from playwright.async_api import async_playwright, Page, Browser
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from .logger import logger
 from .base_scraper import BaseStudiePlusScraper
+
+# Optional dependencies for Playwright scraper (not needed for lightweight requests scraper)
+try:
+    from playwright.async_api import async_playwright, Page, Browser
+    from bs4 import BeautifulSoup
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    async_playwright = None
+    Page = None
+    Browser = None
+    BeautifulSoup = None
 
 load_dotenv()
 
@@ -39,6 +49,11 @@ class StudiePlusScraper(BaseStudiePlusScraper):
         await self.close()
 
     async def start(self):
+        if not PLAYWRIGHT_AVAILABLE:
+            raise ImportError(
+                "Playwright scraper requires 'playwright' and 'beautifulsoup4'. "
+                "Install with: pip install playwright beautifulsoup4 && playwright install chromium"
+            )
         self.playwright = await async_playwright().start()
         debug = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
         self.browser = await self.playwright.chromium.launch(
