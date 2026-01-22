@@ -64,12 +64,12 @@ class BaseStudiePlusScraper(ABC):
         pass
 
     @abstractmethod
-    async def get_assignment_details(self, row_index: str) -> Dict:
+    async def get_assignment_details(self, assignment_id: str) -> Dict:
         """
         Get detailed information about a specific assignment.
 
         Args:
-            row_index: The row index of the assignment
+            assignment_id: The id of the assignment (from 'id' field)
 
         Returns:
             Assignment details dict

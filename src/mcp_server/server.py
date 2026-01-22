@@ -201,7 +201,7 @@ async def get_assignments(
 
     Returns:
         - count: Antal afleveringer
-        - assignments: Liste med subject, title, deadline, submitted, row_index
+        - assignments: Liste med subject, title, deadline, submitted, id
     """
     result = await api.get_assignments_filtered(
         include_submitted=include_submitted,
@@ -212,25 +212,27 @@ async def get_assignments(
     # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
-    # Format deadlines
+    # Format deadlines and clean up internal fields
     for assignment in result.get('assignments', []):
         if assignment.get('deadline'):
             assignment['deadline_formatted'] = format_date_string(
                 assignment['deadline'], include_time=True
             )
+        # Remove internal container_id (id is used instead)
+        assignment.pop('container_id', None)
 
     return clean_for_llm(result)
 
 
 @mcp.tool()
-async def get_assignment_details(row_index: str) -> dict:
+async def get_assignment_details(assignment_id: str) -> dict:
     """
     Hent detaljer om en specifik aflevering inkl. beskrivelse og filer.
 
-    Brug row_index fra get_assignments() resultatet.
+    Brug id fra get_assignments() resultatet (IKKE listen-positionen).
 
     Args:
-        row_index: Afleveringens row_index (fra get_assignments)
+        assignment_id: Afleveringens id (fra get_assignments, brug værdien præcis som den står)
 
     Returns:
         - assignment_title: Titel
@@ -240,7 +242,7 @@ async def get_assignment_details(row_index: str) -> dict:
         - files: Liste af filer med navn og URL
         - submission_status: Afleveret/Ikke afleveret
     """
-    result = await api.get_assignment_detail(row_index=row_index)
+    result = await api.get_assignment_detail(assignment_id=assignment_id)
 
     # Add current time context
     result['current_time'] = format_datetime_for_claude()

@@ -83,7 +83,7 @@ Once installed, you can ask Claude:
 1. **`get_homework()`** - Get all homework assignments
 2. **`get_upcoming_homework(days=7)`** - Get assignments due within N days
 3. **`get_homework_by_subject(subject)`** - Filter assignments by subject
-4. **`get_assignment_details(row_index)`** - Get detailed info (description & files) for a specific assignment
+4. **`get_assignment_details(assignment_id)`** - Get detailed info (description & files) for a specific assignment
 
 ## Components
 

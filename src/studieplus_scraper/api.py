@@ -467,7 +467,7 @@ async def get_all_assignments(only_open: bool = True) -> dict:
                     'deadline': str,
                     'submitted': bool,
                     'submission_date': str,
-                    'row_index': str
+                    'id': str
                 }
             ]
         }
@@ -605,12 +605,12 @@ async def get_assignments_by_subject(subject: str, only_open: bool = True) -> di
         }
 
 
-async def get_assignment_detail(row_index: str) -> dict:
+async def get_assignment_detail(assignment_id: str) -> dict:
     """
     Get detailed information about a specific assignment.
 
     Args:
-        row_index: The row index of the assignment (from 'row_index' field)
+        assignment_id: The assignment id (from 'id' field in get_assignments)
 
     Returns:
         {
@@ -625,7 +625,7 @@ async def get_assignment_detail(row_index: str) -> dict:
             'submission_status': str,
             'deadline': str,
             'files': [{'name': str, 'url': str}],
-            'row_index': str
+            'id': str
         }
 
     Example:
@@ -634,7 +634,7 @@ async def get_assignment_detail(row_index: str) -> dict:
         print(f"Description: {details['description']}")
     """
     async with get_scraper() as scraper:
-        details = await scraper.get_assignment_details(row_index)
+        details = await scraper.get_assignment_details(assignment_id)
         return details
 
 

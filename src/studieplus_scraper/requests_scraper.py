@@ -1129,9 +1129,9 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             deserializer = GWTDeserializer(response)
             assignments = deserializer.parse_assignments(only_open=only_open)
 
-            # Add row_index for compatibility
-            for i, a in enumerate(assignments):
-                a['row_index'] = str(i)
+            # Add id (using container_id) for fetching details later
+            for a in assignments:
+                a['id'] = str(a.get('container_id', ''))
 
             logger.info(f"Found {len(assignments)} assignments via GWT deserializer (only_open={only_open})")
             return assignments
@@ -1142,22 +1142,27 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             traceback.print_exc()
             return []
 
-    async def get_assignment_details(self, row_index: str) -> Dict:
+    async def get_assignment_details(self, assignment_id: str) -> Dict:
         """
-        Get assignment details by row index.
+        Get assignment details by id (container_id).
 
         Returns assignment info including description (HTML content) and files.
         Uses getAflevering GWT-RPC call for full details.
         """
         try:
-            # Get all assignments to find the one at row_index
+            # Get all assignments and find the one with matching container_id
             assignments = await self.get_homework(only_open=False)
-            idx = int(row_index)
 
-            if not (0 <= idx < len(assignments)):
-                return {'error': f'Assignment not found at index {row_index}'}
+            # Find assignment by container_id
+            assignment = None
+            for a in assignments:
+                if str(a.get('container_id')) == assignment_id:
+                    assignment = a
+                    break
 
-            assignment = assignments[idx]
+            if not assignment:
+                return {'error': f'Assignment not found with id {assignment_id}'}
+
             container_id = assignment.get('container_id')
 
             # Get files for this assignment using container_id
@@ -1178,8 +1183,7 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 'submission_status': 'Afleveret' if assignment.get('submitted') else 'Ikke afleveret',
                 'deadline': assignment.get('deadline', ''),
                 'files': files,
-                'row_index': row_index,
-                'container_id': container_id,
+                'id': str(container_id),
             }
 
         except Exception as e:

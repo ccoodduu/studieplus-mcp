@@ -266,7 +266,7 @@ class StudiePlusScraper(BaseStudiePlusScraper):
                             'class': class_name,
                             'week': week,
                             'deadline': deadline,
-                            'row_index': row_number if row_number else str(row_idx)
+                            'id': row_number if row_number else str(row_idx)
                         })
 
         if homework_items:
@@ -275,7 +275,7 @@ class StudiePlusScraper(BaseStudiePlusScraper):
 
         return []
 
-    async def get_assignment_details(self, row_index: str) -> Dict:
+    async def get_assignment_details(self, assignment_id: str) -> Dict:
         if not self.page:
             raise Exception("Browser not started. Call start() first.")
 
@@ -283,7 +283,7 @@ class StudiePlusScraper(BaseStudiePlusScraper):
         if not login_success:
             raise Exception("Login failed")
 
-        logger.info(f"Fetching assignment details for row {row_index}")
+        logger.info(f"Fetching assignment details for id {assignment_id}")
 
         try:
             logger.info("Navigating to assignments page...")
@@ -301,9 +301,9 @@ class StudiePlusScraper(BaseStudiePlusScraper):
                 await self.page.screenshot(path=debug_path("assignment_details_page.png"))
                 logger.debug("Saved HTML and screenshot")
 
-            logger.info(f"Looking for 'Details' button in row {row_index}")
+            logger.info(f"Looking for 'Details' button in row {assignment_id}")
             details_button = await self.page.wait_for_selector(
-                f'tr[__gwt_row="{row_index}"] button:has-text("Details")',
+                f'tr[__gwt_row="{assignment_id}"] button:has-text("Details")',
                 timeout=10000
             )
 
@@ -338,7 +338,7 @@ class StudiePlusScraper(BaseStudiePlusScraper):
                     'submission_status': '',
                     'deadline': '',
                     'files': [],
-                    'row_index': row_index
+                    'id': assignment_id
                 }
 
                 # Parse table rows - handle both Danish and English labels
@@ -450,7 +450,7 @@ class StudiePlusScraper(BaseStudiePlusScraper):
                 'submission_status': '',
                 'deadline': '',
                 'files': [],
-                'row_index': row_index,
+                'id': assignment_id,
                 'error': str(e)
             }
 
