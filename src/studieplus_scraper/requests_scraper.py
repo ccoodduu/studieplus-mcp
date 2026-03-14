@@ -15,7 +15,7 @@ from .gwt_deserializer import GWTScheduleParser, parse_schedule_response, GWTDes
 
 load_dotenv()
 
-DEBUG_SAVE_RAW_RESPONSES = True
+DEBUG_SAVE_RAW_RESPONSES = False
 
 
 class GWTParser:
@@ -111,9 +111,10 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
         self.base_url = "https://all.studieplus.dk"
         self.logged_in = False
 
-        # GWT module hashes - may need updates when StudiePlus updates
-        self.skema_permutation = "B0742ABB769CAA45E3CD75BA219C6E04"
-        self.opgave_permutation = "ED91C3E5761A98C33045A799A1B8B8B1"
+        # GWT hashes are discovered automatically from StudiePlus JavaScript
+        self.skema_permutation = None
+        self.opgave_permutation = None
+        self._service_hashes = {}  # module -> {servicename: hash}
 
     def _find_school_instnr(self) -> Optional[str]:
         """Find school institution number."""
@@ -132,15 +133,93 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
         logger.error(f"Could not find school: {self.school}")
         return None
 
+    def _discover_gwt_hashes(self, module: str) -> Tuple[str, Dict[str, str]]:
+        """
+        Auto-discover GWT permutation hash and service hashes for a module.
+
+        Fetches {module}.nocache.js to find the webkit permutation hash,
+        then fetches the cache.js to extract service hashes.
+
+        Returns: (permutation_hash, {service_name: service_hash})
+        """
+        nocache_url = f"{self.base_url}/{module}/{module}/{module}.nocache.js"
+        resp = self.session.get(nocache_url)
+
+        if resp.status_code != 200:
+            raise Exception(f"Could not fetch {nocache_url}")
+
+        # nocache.js assigns hashes to variables, then maps them to browser+locale combos
+        # The webkit hash is the first one assigned (mapped to 'webkit')
+        # Pattern: variable='HASH' where variables are assigned in order
+        hashes = re.findall(r"='([A-F0-9]{32})'", resp.text)
+        if not hashes:
+            raise Exception(f"No permutation hashes found in {module}.nocache.js")
+
+        # First hash is always webkit (Chrome/Edge/etc.)
+        perm_hash = hashes[0]
+        logger.info(f"Discovered {module} permutation hash: {perm_hash}")
+
+        # Fetch the cache.js to find service hashes
+        cache_url = f"{self.base_url}/{module}/{module}/{perm_hash}.cache.js"
+        cache_resp = self.session.get(cache_url)
+
+        if cache_resp.status_code != 200:
+            raise Exception(f"Could not fetch {cache_url}")
+
+        # Service hashes follow pattern: FuncName.call(this,Func(),'servicename','HASH',...)
+        # The function name is minified and varies between modules
+        service_matches = re.findall(
+            r",'(\w+service)','([A-F0-9]{32})'",
+            cache_resp.text
+        )
+
+        service_hashes = {name: hash_val for name, hash_val in service_matches}
+        logger.info(f"Discovered {module} service hashes: {list(service_hashes.keys())}")
+
+        return perm_hash, service_hashes
+
+    def _ensure_hashes(self, module: str):
+        """Ensure GWT hashes are discovered for the given module."""
+        if module == "skema" and self.skema_permutation:
+            return
+        if module == "opgave" and self.opgave_permutation:
+            return
+
+        perm_hash, service_hashes = self._discover_gwt_hashes(module)
+        self._service_hashes[module] = service_hashes
+
+        if module == "skema":
+            self.skema_permutation = perm_hash
+        elif module == "opgave":
+            self.opgave_permutation = perm_hash
+
+    def _get_service_hash(self, module: str, service_name: str) -> str:
+        """Get the serialization policy hash for a GWT service."""
+        self._ensure_hashes(module)
+        hashes = self._service_hashes.get(module, {})
+        if service_name not in hashes:
+            raise Exception(f"Service '{service_name}' not found in {module} module. Available: {list(hashes.keys())}")
+        return hashes[service_name]
+
     def login(self) -> bool:
         """Login to StudiePlus."""
         if self.logged_in:
             return True
 
+        if not self.username or not self.password or not self.school:
+            missing = []
+            if not self.username:
+                missing.append("STUDIEPLUS_USERNAME")
+            if not self.password:
+                missing.append("STUDIEPLUS_PASSWORD")
+            if not self.school:
+                missing.append("STUDIEPLUS_SCHOOL")
+            raise Exception(f"Manglende login-oplysninger: {', '.join(missing)} skal sættes som environment variables")
+
         try:
             instnr = self._find_school_instnr()
             if not instnr:
-                return False
+                raise Exception(f"Skolen '{self.school}' blev ikke fundet. Tjek STUDIEPLUS_SCHOOL environment variable.")
 
             self.session.cookies.set('instkey', instnr)
             self.session.cookies.set('instnr', instnr)
@@ -168,11 +247,13 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 return True
 
             logger.error(f"Login failed. URL: {response.url}")
-            return False
+            raise Exception("Login fejlede - tjek brugernavn og adgangskode (STUDIEPLUS_USERNAME og STUDIEPLUS_PASSWORD)")
 
         except Exception as e:
+            if "Manglende login" in str(e) or "ikke fundet" in str(e) or "Login fejlede" in str(e):
+                raise
             logger.error(f"Login error: {e}")
-            return False
+            raise Exception(f"Login fejl: {e}")
 
     def _make_gwt_call(self, service_url: str, payload: str, permutation: str, module: str) -> str:
         """Make a GWT-RPC call."""
@@ -194,31 +275,85 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
     # RESSOURCE/FILES API
     # ============================================================
 
-    def get_lesson_files(self, skema_id: int) -> List[Dict]:
+    def get_note_file_container(self, lesson_id: int) -> Optional[int]:
+        """
+        Get the file container_id for a lesson by calling hentNoteForSkema.
+
+        The schedule's SkemaNote2.c is NOT the file container — we need to call
+        hentNoteForSkema(lesson_id) to get the Note which contains the actual
+        file container_id in its nested SkemaNote2.
+        """
+        if not self.login():
+            return None
+
+        skemanote_hash = self._get_service_hash("skema", "skemanoteservice")
+        if not skemanote_hash:
+            return None
+
+        payload = (
+            "7|0|5|"
+            f"{self.base_url}/skema/skema/|"
+            f"{skemanote_hash}|"
+            "dk.uddata.services.interfaces.SkemaNote2Service|"
+            "hentNoteForSkema|"
+            "I|"
+            f"1|2|3|4|1|5|{lesson_id}|"
+        )
+
+        try:
+            response = self._make_gwt_call(
+                f"{self.base_url}/skema/skemanoteservice",
+                payload,
+                self.skema_permutation,
+                "skema"
+            )
+
+            if not response.startswith('//OK'):
+                return None
+
+            deserializer = GWTDeserializer(response)
+            note = deserializer._read_object()
+
+            if not isinstance(note, dict) or note.get('_class') != 'Note':
+                logger.debug(f"Expected Note object, got: {type(note)}")
+                return None
+
+            skema_note2 = note.get('skema_note2')
+            if not isinstance(skema_note2, dict):
+                logger.debug(f"No SkemaNote2 in Note response")
+                return None
+
+            container_id = skema_note2.get('file_container_id')
+            if isinstance(container_id, int) and container_id > 0:
+                logger.info(f"Found file container_id={container_id} for lesson_id={lesson_id}")
+                return container_id
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Error getting note for lesson_id={lesson_id}: {e}")
+            return None
+
+    def get_lesson_files(self, container_id: int) -> List[Dict]:
         """
         Get files attached to a lesson via ressourceservice.findRessourcerPerContainer.
 
         Args:
-            skema_id: The lesson ID from SkemaBegivenhed
-
-        Returns:
-            List of file dicts: [{'name': str, 'id': int}, ...]
+            container_id: The file container_id (from get_note_file_container)
         """
         if not self.login():
             return []
 
-        # GWT-RPC payload for findRessourcerPerContainer
-        # Format from Chrome DevTools capture:
-        # 7|0|6|base_url|hash|service|method|RessourceKey|RessourceObjektType|1|2|3|4|1|5|5|skema_id|6|12|
+        ressource_hash = self._get_service_hash("skema", "ressourceservice")
         payload = (
             "7|0|6|"
             f"{self.base_url}/skema/skema/|"
-            "09D4724C79CC98B839803FCB9CBF2218|"
+            f"{ressource_hash}|"
             "dk.uddata.services.interfaces.RessourceService|"
             "findRessourcerPerContainer|"
             "dk.uddata.model.ressourcer.RessourceKey/785242658|"
             "dk.uddata.model.ressourcer.RessourceObjektType/3745084519|"
-            f"1|2|3|4|1|5|5|{skema_id}|6|12|"
+            f"1|2|3|4|1|5|5|{container_id}|6|12|"
         )
 
         try:
@@ -232,10 +367,10 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             if response.startswith('//OK'):
                 return self._parse_ressource_response(response)
             else:
-                logger.debug(f"Ressource fetch failed for skema_id={skema_id}: {response[:200]}")
+                logger.debug(f"Ressource fetch failed for container_id={container_id}: {response[:200]}")
                 return []
         except Exception as e:
-            logger.debug(f"Error fetching ressources for skema_id={skema_id}: {e}")
+            logger.debug(f"Error fetching ressources for container_id={container_id}: {e}")
             return []
 
     def _parse_ressource_response(self, response: str) -> List[Dict]:
@@ -319,31 +454,64 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             logger.debug(f"Error parsing ressource response: {e}")
             return []
 
-    def get_file_download_url(self, file_id: int) -> Optional[str]:
+    def _parse_url_response(self, response: str) -> Optional[str]:
+        """Extract signed URL from a hentRessourceUrl/hentRessourceUrlText response."""
+        if not response.startswith('//OK'):
+            return None
+        try:
+            parsed = json.loads(response[4:])
+            if len(parsed) > 1 and isinstance(parsed[1], list) and len(parsed[1]) > 0:
+                return parsed[1][0]
+        except Exception:
+            pass
+        return None
+
+    def get_file_download_url(self, file_id: int, is_skemanote: bool = False) -> Optional[str]:
         """
-        Get the signed download URL for a file via hentRessourceUrl.
+        Get the signed download URL for a file.
+
+        Assignment files use hentRessourceUrl(int, String) via opgave module.
+        Schedule note files use hentRessourceUrlText(int) via skema module.
 
         Args:
             file_id: The ressource/file ID
-
-        Returns:
-            Signed S3 URL for downloading the file, or None on error
+            is_skemanote: True for schedule note files (uses hentRessourceUrlText)
         """
         if not self.login():
             return None
 
-        # GWT-RPC payload for hentRessourceUrl
-        # Method: hentRessourceUrl(int fileId, String empty)
+        if is_skemanote:
+            url = self._get_url_via_text(file_id)
+            if url:
+                return url
+            url = self._get_url_via_standard(file_id, "skema")
+            if url:
+                return url
+        else:
+            url = self._get_url_via_standard(file_id, "opgave")
+            if url:
+                return url
+            url = self._get_url_via_text(file_id)
+            if url:
+                return url
+
+        logger.debug(f"hentRessourceUrl failed for file_id={file_id}")
+        return None
+
+    def _get_url_via_text(self, file_id: int) -> Optional[str]:
+        """Call hentRessourceUrlText(int) — used for schedule note files."""
+        hash_val = self._get_service_hash("skema", "ressourceservice")
+        if not hash_val:
+            return None
+
         payload = (
-            "7|0|7|"
+            "7|0|5|"
             f"{self.base_url}/skema/skema/|"
-            "09D4724C79CC98B839803FCB9CBF2218|"
+            f"{hash_val}|"
             "dk.uddata.services.interfaces.RessourceService|"
-            "hentRessourceUrl|"
+            "hentRessourceUrlText|"
             "I|"
-            "java.lang.String/2004016611|"
-            "|"  # empty string
-            f"1|2|3|4|2|5|6|{file_id}|7|"
+            f"1|2|3|4|1|5|{file_id}|"
         )
 
         try:
@@ -353,41 +521,67 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 self.skema_permutation,
                 "skema"
             )
-
-            if response.startswith('//OK'):
-                # Response format: //OK[1, ["https://...signed-url..."], 0, 7]
-                # Parse to extract URL
-                import json
-                content = response[4:]  # Remove //OK prefix
-                parsed = json.loads(content)
-                # URL is in the array at index 1
-                if len(parsed) > 1 and isinstance(parsed[1], list) and len(parsed[1]) > 0:
-                    return parsed[1][0]
-            else:
-                logger.debug(f"hentRessourceUrl failed for file_id={file_id}: {response[:100]}")
-
-            return None
-        except Exception as e:
-            logger.debug(f"Error getting download URL for file_id={file_id}: {e}")
+            return self._parse_url_response(response)
+        except Exception:
             return None
 
-    def get_lesson_files_with_urls(self, skema_id: int) -> List[Dict]:
+    def _get_url_via_standard(self, file_id: int, module: str) -> Optional[str]:
+        """Call hentRessourceUrl(int, String) — used for assignment/regular files."""
+        if module == "opgave":
+            hash_val = self._get_service_hash("opgave", "ressourceservice")
+            perm = self.opgave_permutation
+        else:
+            hash_val = self._get_service_hash("skema", "ressourceservice")
+            perm = self.skema_permutation
+
+        if not hash_val:
+            return None
+
+        payload = (
+            "7|0|7|"
+            f"{self.base_url}/{module}/{module}/|"
+            f"{hash_val}|"
+            "dk.uddata.services.interfaces.RessourceService|"
+            "hentRessourceUrl|"
+            "I|"
+            "java.lang.String/2004016611|"
+            "|"
+            f"1|2|3|4|2|5|6|{file_id}|7|"
+        )
+
+        try:
+            response = self._make_gwt_call(
+                f"{self.base_url}/{module}/ressourceservice",
+                payload,
+                perm,
+                module
+            )
+            return self._parse_url_response(response)
+        except Exception:
+            return None
+
+    def get_lesson_files_with_urls(self, lesson_id: int) -> List[Dict]:
         """
         Get files for a lesson with download URLs.
 
-        Convenience method that combines get_lesson_files and get_file_download_url.
+        Full flow (matching the website):
+        1. hentNoteForSkema(lesson_id) → get file container_id
+        2. findRessourcerPerContainer(container_id, SKEMANOTE) → get files
+        3. hentRessourceUrl(fileId, "") → get signed S3 URLs
 
         Args:
-            skema_id: The lesson ID
-
-        Returns:
-            List of file dicts: [{'name': str, 'id': int, 'url': str}, ...]
+            lesson_id: The lesson/skema event ID
         """
-        files = self.get_lesson_files(skema_id)
+        file_container_id = self.get_note_file_container(lesson_id)
+        if not file_container_id:
+            logger.debug(f"No file container found for lesson_id={lesson_id}")
+            return []
+
+        files = self.get_lesson_files(file_container_id)
 
         for f in files:
             if f.get('id'):
-                url = self.get_file_download_url(f['id'])
+                url = self._get_url_via_standard(f['id'], "skema")
                 f['url'] = url or ''
 
         return files
@@ -409,11 +603,11 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             return None
 
         # GWT-RPC payload for hentNoteForSkema
-        # Service: skemanoteservice, Hash: EB1BAA9F2AD8A53B59DC22F1082E0E1B
+        note_hash = self._get_service_hash("skema", "skemanoteservice")
         payload = (
             "7|0|5|"
             f"{self.base_url}/skema/skema/|"
-            "EB1BAA9F2AD8A53B59DC22F1082E0E1B|"
+            f"{note_hash}|"
             "dk.uddata.services.interfaces.SkemaNote2Service|"
             "hentNoteForSkema|"
             "I|"
@@ -506,18 +700,18 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
     def get_schedule_raw(self, start_date: datetime = None, end_date: datetime = None) -> str:
         """Get raw schedule data via GWT-RPC."""
-        if not self.login():
-            raise Exception("Login failed")
+        self.login()
 
         if start_date is None:
             start_date = datetime.now()
         if end_date is None:
             end_date = start_date + timedelta(days=6)
 
+        skema_hash = self._get_service_hash("skema", "skemaservice")
         payload = (
             "7|0|6|"
             f"{self.base_url}/skema/skema/|"
-            "83C0398D428292FBFA6ED34FEEEA605B|"
+            f"{skema_hash}|"
             "dk.uddata.services.interfaces.SkemaService|"
             "hentEgnePersSkemaData|"
             "dk.uddata.gwt.comm.shared.UDate/2314285719|"
@@ -587,17 +781,16 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 continue
 
             lesson_date = gl.start_time.strftime('%Y-%m-%d')
-            time_str = f"{gl.start_time.strftime('%H:%M')}-{gl.end_time.strftime('%H:%M')}"
+            if gl.end_time:
+                time_str = f"{gl.start_time.strftime('%H:%M')}-{gl.end_time.strftime('%H:%M')}"
+            else:
+                time_str = gl.start_time.strftime('%H:%M')
             weekday = weekday_names[gl.start_time.weekday()]
-
-            # Get has_files from notes if available
-            has_files = False
-            if gl.lesson_id in lesson_notes:
-                has_files = lesson_notes[gl.lesson_id].get('has_files', False)
 
             lesson = {
                 'id': f"{lesson_date}_{gl.start_time.strftime('%H:%M')}",
-                'lesson_id': gl.lesson_id,  # Include raw lesson_id for debugging
+                'lesson_id': gl.lesson_id,
+                'file_container_id': gl.file_container_id,
                 'date': lesson_date,
                 'weekday': weekday,
                 'time': time_str,
@@ -606,9 +799,9 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 'room': ", ".join(gl.rooms) if gl.rooms else "",
                 'has_homework': gl.has_homework,
                 'has_note': gl.has_note,
-                'has_files': has_files,
-                'homework': gl.homework or "",  # Homework text from SkemaNote2
-                'note': gl.note or "",  # Note text from SkemaNote2
+                'has_files': gl.has_files,
+                'homework': gl.homework or "",
+                'note': gl.note or "",
             }
             lessons.append(lesson)
 
@@ -971,18 +1164,20 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
     def get_homework_messages_raw(self, start_date: datetime = None, end_date: datetime = None) -> str:
         """Get raw homework messages via GWT-RPC."""
-        if not self.login():
-            raise Exception("Login failed")
+        self.login()
 
         if start_date is None:
             start_date = datetime.now()
         if end_date is None:
             end_date = start_date + timedelta(days=6)
 
+        aktivitet_hash = self._service_hashes.get("skema", {}).get("aktivitetskalenderservice")
+        if not aktivitet_hash:
+            raise Exception("AktivitetskalenderService is no longer available in StudiePlus")
         payload = (
             "7|0|6|"
             f"{self.base_url}/skema/skema/|"
-            "366DFB19BE92393600809C88D33DD15A|"
+            f"{aktivitet_hash}|"
             "dk.uddata.services.interfaces.AktivitetskalenderService|"
             "hentAlleMineBeskeder|"
             "dk.uddata.gwt.comm.shared.UDate/2314285719|"
@@ -1005,13 +1200,13 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
     def get_assignments_raw(self) -> str:
         """Get raw assignments via GWT-RPC."""
-        if not self.login():
-            raise Exception("Login failed")
+        self.login()
 
+        opgave_hash = self._get_service_hash("opgave", "opgaveservice")
         payload = (
             "7|0|4|"
             f"{self.base_url}/opgave/opgave/|"
-            "459B74E0E07134BC40784E117D837355|"
+            f"{opgave_hash}|"
             "dk.uddata.services.interfaces.OpgaveService|"
             "getAlleAfleveringer|"
             "1|2|3|4|0|"
@@ -1034,14 +1229,14 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
         Returns:
             Raw GWT-RPC response string
         """
-        if not self.login():
-            raise Exception("Login failed")
+        self.login()
 
         # GWT-RPC payload for getAflevering(int afleveringId)
+        opgave_hash = self._get_service_hash("opgave", "opgaveservice")
         payload = (
             "7|0|5|"
             f"{self.base_url}/opgave/opgave/|"
-            "459B74E0E07134BC40784E117D837355|"
+            f"{opgave_hash}|"
             "dk.uddata.services.interfaces.OpgaveService|"
             "getAflevering|"
             "I|"
@@ -1073,10 +1268,11 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
         # GWT-RPC payload for findRessourcerPerContainer
         # Type 5 = OPGAVE (assignment), Type 12 = SKEMA (lesson)
+        ressource_hash = self._get_service_hash("opgave", "ressourceservice")
         payload = (
             "7|0|6|"
             f"{self.base_url}/opgave/opgave/|"
-            "09D4724C79CC98B839803FCB9CBF2218|"
+            f"{ressource_hash}|"
             "dk.uddata.services.interfaces.RessourceService|"
             "findRessourcerPerContainer|"
             "dk.uddata.model.ressourcer.RessourceKey/785242658|"
@@ -1124,8 +1320,9 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
         Returns list of assignments with subject, title, deadline, etc.
         """
+        response = self.get_assignments_raw()
+
         try:
-            response = self.get_assignments_raw()
             deserializer = GWTDeserializer(response)
             assignments = deserializer.parse_assignments(only_open=only_open)
 
@@ -1137,7 +1334,7 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             return assignments
 
         except Exception as e:
-            logger.error(f"Error fetching assignments: {e}")
+            logger.error(f"Error parsing assignments: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -1164,12 +1361,28 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 return {'error': f'Assignment not found with id {assignment_id}'}
 
             container_id = assignment.get('container_id')
+            opgave_id = assignment.get('opgave_id')
 
-            # Get files for this assignment using container_id
+            # Get files from both sources:
+            # - container_id: student's submitted files
+            # - opgave_id: teacher's attached files (assignment materials)
             files = []
+
+            # Teacher files (from opgave_id)
+            if opgave_id:
+                teacher_files = self.get_assignment_files(opgave_id)
+                for f in teacher_files:
+                    f['source'] = 'teacher'
+                files.extend(teacher_files)
+                logger.info(f"Found {len(teacher_files)} teacher files for opgave_id={opgave_id}")
+
+            # Student files (from container_id)
             if container_id:
-                files = self.get_assignment_files(container_id)
-                logger.info(f"Found {len(files)} files for assignment with container_id={container_id}")
+                student_files = self.get_assignment_files(container_id)
+                for f in student_files:
+                    f['source'] = 'student'
+                files.extend(student_files)
+                logger.info(f"Found {len(student_files)} student files for container_id={container_id}")
 
             return {
                 'assignment_title': assignment.get('title', ''),
@@ -1192,17 +1405,23 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
             traceback.print_exc()
             return {'error': str(e)}
 
-    async def download_lesson_file(self, file_url: str, file_name: str, output_dir: str = "./downloads") -> Dict:
+    async def download_lesson_file(self, file_url: str, file_name: str, output_dir: str = None) -> Dict:
         """
-        Download a file from a lesson.
+        Download a file from a lesson to the user's computer.
         """
         import os
+        from pathlib import Path
 
         try:
             if not self.login():
                 return {'success': False, 'error': 'Login failed'}
 
+            if output_dir is None:
+                output_dir = str(Path.home() / "Downloads")
+
+            output_dir = str(Path(output_dir).resolve())
             os.makedirs(output_dir, exist_ok=True)
+
             response = self.session.get(file_url, stream=True)
 
             if response.status_code == 200:
@@ -1213,7 +1432,7 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
 
                 return {
                     'success': True,
-                    'file_path': file_path,
+                    'file_path': str(Path(file_path).resolve()),
                     'file_name': file_name,
                     'file_size': os.path.getsize(file_path)
                 }

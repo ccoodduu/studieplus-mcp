@@ -51,7 +51,7 @@ Add this configuration:
     "studieplus": {
       "command": "python",
       "args": [
-        "C:/Users/willi/mcp-servers/studieplus-mcp/src/mcp_server/server.py"
+        "/sti/til/studieplus-mcp/src/mcp_server/server.py"
       ],
       "env": {
         "STUDIEPLUS_USERNAME": "your_username",

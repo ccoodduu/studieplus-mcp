@@ -218,8 +218,9 @@ async def get_assignments(
             assignment['deadline_formatted'] = format_date_string(
                 assignment['deadline'], include_time=True
             )
-        # Remove internal container_id (id is used instead)
+        # Remove internal IDs (id is used instead)
         assignment.pop('container_id', None)
+        assignment.pop('opgave_id', None)
 
     return clean_for_llm(result)
 
@@ -259,13 +260,12 @@ async def get_lesson_files(lesson_id: int) -> dict:
     """
     Hent filer fra en lektion med download URLs.
 
-    Brug lesson_id fra get_day_overview() eller get_week_overview().
+    Brug lesson_id fra lektioner med has_files=True i get_day_overview() eller get_week_overview().
 
     Args:
-        lesson_id: Lektionens ID (fra lessons i day/week overview)
+        lesson_id: Lektionens ID (fra lessons med has_files=True)
 
     Returns:
-        - lesson_id: Lektionens ID
         - count: Antal filer
         - files: Liste med name, id, url (signeret S3 URL, gyldig ~5 min)
     """
@@ -278,18 +278,20 @@ async def get_lesson_files(lesson_id: int) -> dict:
 
 
 @mcp.tool()
-async def download_lesson_file(file_url: str, file_name: str, output_dir: str = "./downloads") -> dict:
+async def download_lesson_file(file_url: str, file_name: str, output_dir: str = None) -> dict:
     """
-    Download en fil fra en lektion til downloads mappen.
+    Download en fil fra en lektion til brugerens computer.
+
+    Filen gemmes som default i brugerens Downloads-mappe.
 
     Args:
         file_url: URL til filen (fra get_lesson_files)
         file_name: Filens navn
-        output_dir: Mappe at gemme i (default: ./downloads)
+        output_dir: Absolut sti til mappe (default: brugerens Downloads-mappe)
 
     Returns:
         - success: Om download lykkedes
-        - file_path: Sti til den downloadede fil
+        - file_path: Absolut sti til den downloadede fil
         - file_size: Filstørrelse i bytes
     """
     result = await api.download_file(

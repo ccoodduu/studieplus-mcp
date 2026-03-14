@@ -26,6 +26,7 @@ class SkemaLesson:
     has_homework: bool = False
     has_note: bool = False
     has_files: bool = False
+    file_container_id: int = 0
 
     def __repr__(self):
         time_str = ""
@@ -78,6 +79,7 @@ class GWTDeserializer:
             'dk.uddata.model.skema.SkemaBegivenhed$AktiviteterISkema': self._deserialize_aktiviteter,
             'dk.uddata.model.skema.SkemaBegivenhed$Status': self._deserialize_enum,
             'dk.uddata.model.skemanoter.SkemaNote2': self._deserialize_skema_note,
+            'dk.uddata.model.skemanoter.Note': self._deserialize_note,
 
             # Aarstyp types (p4f: a=405, b=24, c=int, d=519, e=string, f=311)
             'dk.uddata.model.skema.Aarstyp': self._deserialize_aarstyp,
@@ -312,45 +314,21 @@ class GWTDeserializer:
 
     def _deserialize_pers_skema_data(self, debug: bool = False) -> dict:
         """
-        Deserialize PersSkemaData (Wlg function).
+        Deserialize PersSkemaData (Dmg function in new JS).
 
         This is the top-level response object.
-        Field b.d contains the list of SkemaBegivenhed.
+        Field b.A contains the schedule as a HashMap: {UDate -> ArrayList<SkemaBegivenhed>}
+        Field b.d is an ArrayList that may also contain lessons (legacy).
         """
-        if debug:
-            print(f"DEBUG PersSkemaData: ENTER pos={self.pos}")
-            print(f"DEBUG: Stack preview: {self.data[self.pos-10:self.pos]}")
-
-        # b.a = type 29
-        pos_before_a = self.pos
+        # b.a = type 29 (HashMap of Aarstyp)
         a = self._read_object()
-        if debug:
-            print(f"DEBUG: b.a read from {pos_before_a} (value={self.data[pos_before_a-1] if pos_before_a > 0 else 'N/A'}), now pos={self.pos}")
-
         # b.b = UDate (type 7)
-        pos_before_b = self.pos
         b = self._read_object()
-        if debug:
-            print(f"DEBUG: b.b read from {pos_before_b}, now pos={self.pos}")
-
-        # b.c = type 29
-        pos_before_c = self.pos
+        # b.c = type 29 (HashMap)
         c = self._read_object()
-        if debug:
-            print(f"DEBUG: b.c read from {pos_before_c}, now pos={self.pos}")
-
-        # b.d = ArrayList (type 14) - THIS IS THE LESSONS LIST
-        pos_before_d = self.pos
-        lessons = self._read_object()
-        if debug:
-            lessons_type = type(lessons).__name__
-            lessons_len = len(lessons) if isinstance(lessons, list) else 'N/A'
-            marker_val = self.data[pos_before_d-1] if pos_before_d > 0 else 'N/A'
-            print(f"DEBUG: b.d read from {pos_before_d} (marker={marker_val}), type={lessons_type}, len={lessons_len}")
-            if isinstance(lessons, list) and lessons:
-                print(f"DEBUG: First lesson item: {type(lessons[0])}")
-
-        # b.e = type 29
+        # b.d = ArrayList (type 14) - may contain lessons (legacy)
+        d = self._read_object()
+        # b.e = type 29 (HashMap)
         e = self._read_object()
         # b.f = type 29
         f = self._read_object()
@@ -380,16 +358,25 @@ class GWTDeserializer:
         u = self._read_object()
         # b.v = type 29
         v = self._read_object()
-        # b.w = ArrayList (type 14)
+        # b.w = ArrayList (type 14) - SkemaUvfo objects
         w = self._read_object()
-        # b.A = type 29
+        # b.A = type 29 (HashMap: {UDate -> ArrayList<SkemaBegivenhed>}) - SCHEDULE DATA
         A = self._read_object()
         # b.B = type 29
         B = self._read_object()
 
+        # Extract lessons from b.A (HashMap by date) or fallback to b.d (legacy ArrayList)
+        lessons = []
+        if isinstance(A, dict):
+            for date_key, date_lessons in A.items():
+                if isinstance(date_lessons, list):
+                    lessons.extend(date_lessons)
+        if not lessons and isinstance(d, list):
+            lessons = d
+
         return {
             '_class': 'PersSkemaData',
-            'lessons': lessons if isinstance(lessons, list) else []
+            'lessons': lessons
         }
 
     def _deserialize_aktiviteter(self) -> dict:
@@ -433,10 +420,10 @@ class GWTDeserializer:
         b.b = string
         b.c = int
         b.d = boolean
-        b.e = string (plain text for homework)
-        b.f = string (html content for homework)
-        b.g = string
-        b.i = string
+        b.e = string (homework HTML)
+        b.f = string (homework plain text)
+        b.g = string (note HTML)
+        b.i = string (note plain text)
         b.j = object (type 24)
         b.k = string
         b.n = object (type 24)
@@ -463,13 +450,39 @@ class GWTDeserializer:
         r = self._pop()           # int
         s = self._read_string()   # string
 
+        # n is an Integer object — extract raw int value
+        file_container_id = n if isinstance(n, int) else (n.get('value') if isinstance(n, dict) else None)
+
         return {
             '_class': 'SkemaNote2',
             'id': a,
-            'class_name': b,   # Class name (e.g., "htxqr24")
-            'html': e,         # HTML content (field e)
-            'plain_text': f,   # Plain text content (field f)
-            'date': o,         # UDate
+            'class_name': b,
+            'container_id': c,
+            'has_files': d,
+            'homework_html': e,
+            'homework_text': f,
+            'note_html': g,
+            'note_text': i,
+            'date': o,
+            'file_container_id': file_container_id,
+        }
+
+    def _deserialize_note(self) -> dict:
+        """
+        Deserialize Note (Lzg function - line 26658).
+
+        b.a = zUb(iqd(a), 24)   // object (Integer/SkemaObjekt)
+        b.b = zUb(iqd(a), 169)  // object (Medarbejder/Bruger)
+        b.c = zUb(iqd(a), 211)  // object (SkemaNote2)
+        """
+        a = self._read_object()  # Integer/SkemaObjekt
+        b = self._read_object()  # Medarbejder/Bruger
+        c = self._read_object()  # SkemaNote2
+        return {
+            '_class': 'Note',
+            'skema_objekt': a,
+            'bruger': b,
+            'skema_note2': c,
         }
 
     def _deserialize_aarstyp(self) -> dict:
@@ -794,51 +807,45 @@ class GWTDeserializer:
 
     def _deserialize_aflevering(self) -> dict:
         """
-        Deserialize Aflevering (bfd function - line 35522 in assignment_source_clean.js).
+        Deserialize Aflevering (Ked function in fresh assignment JS).
 
-        Fields (read in order):
-        b.a = Fic(a), type = UDate (submission datetime)
-        b.b = Fic(a), type 237 = AfleveringBedoemmelse (evaluation info)
-        b.c = pop int (container_id - used for RessourceService file lookup!)
-        b.d = Fic(a), type 149
-        b.e = Fic(a), type 210
-        b.f = Oic(a) - boolean
-        b.g = Oic(a) - boolean
-        b.i = Fic(a), type 43 (another UDate)
-        b.j = Fic(a), type 211 = OpgaveElev (contains assignment data!)
-        b.k = Fic(a), type 22
-        b.n = Fic(a), type 182 = AfleveringStatus
-        b.o = Oic(a) - boolean
-
-        Note: The container_id (field c) is the key ID used to fetch files via
-        RessourceService.findRessourcerPerContainer() with type OPGAVE.
+        13 fields (updated from fresh JS source 2026-03-13):
+        b.a = Gic(a), type 10   = UDate (submission datetime)
+        b.b = Gic(a), type 239  = AfleveringBedoemmelse
+        b.c = Gic(a), type 22   = ArrayList
+        b.d = a.b[--a.a]        = int (container_id)
+        b.e = Gic(a), type 149  = Elev
+        b.f = Gic(a), type 212  = object
+        b.g = Pic(a)            = boolean
+        b.i = Pic(a)            = boolean
+        b.j = Gic(a), type 43   = Long/Integer
+        b.k = Gic(a), type 213  = OpgaveElev
+        b.n = Gic(a), type 182  = AfleveringStatus
+        b.o = Pic(a)            = boolean
+        b.p = Gic(a), type 22   = ArrayList (NEW)
         """
         a = self._read_object()      # UDate = submission datetime
-        b = self._read_object()      # type 237 = AfleveringBedoemmelse
-        c = self._pop()              # int = container_id (KEY ID for files!)
-        d = self._read_object()      # type 149
-        e = self._read_object()      # type 210
-        f = self._read_bool()        # boolean
+        b = self._read_object()      # AfleveringBedoemmelse
+        c = self._read_object()      # ArrayList
+        d = self._pop()              # int = container_id
+        e = self._read_object()      # Elev
+        f = self._read_object()      # object
         g = self._read_bool()        # boolean
-        i = self._read_object()      # type 43 = another UDate
-        j = self._read_object()      # type 211 = OpgaveElev - THE IMPORTANT ONE!
-        k = self._read_object()      # type 22
-        n = self._read_object()      # type 182 = AfleveringStatus
+        i = self._read_bool()        # boolean
+        j = self._read_object()      # Long/Integer
+        k = self._read_object()      # OpgaveElev
+        n = self._read_object()      # AfleveringStatus
         o = self._read_bool()        # boolean
+        p = self._read_object()      # ArrayList (NEW)
 
-        # a = submission_date (UDate) - when the assignment was submitted
-        # b = bedoemmelse (evaluation/grading info)
-        # c = container_id - used for file lookup via RessourceService
-        # j = OpgaveElev - contains subject, title, hours, deadline
-        # n = status (AfleveringStatus enum)
         return {
             '_class': 'Aflevering',
-            'opgave_elev': j,  # This is where subject, title, hours, deadline are
-            'submission_date': a,  # Field a = submission datetime (UDate)
-            'submitted': a is not None and isinstance(a, datetime),  # True if assignment has been submitted
-            'status': n,  # AfleveringStatus enum (ordinal: 0=AABEN, 1=LAAST, 2=RETTET, etc.)
-            'bedoemmelse': b,  # AfleveringBedoemmelse with evaluation info
-            'container_id': c,  # Used for fetching files via RessourceService
+            'opgave_elev': k,
+            'submission_date': a,
+            'submitted': a is not None and isinstance(a, datetime),
+            'status': n,
+            'bedoemmelse': b,
+            'container_id': d,
         }
 
     def _deserialize_opgave_elev(self) -> dict:
@@ -1037,49 +1044,50 @@ class GWTDeserializer:
 
     def _deserialize_bruger_elev(self) -> dict:
         """
-        Deserialize Elev (G8c function - line 38596).
+        Deserialize Elev (m8c function in fresh assignment JS).
 
-        This reads the Elev-specific fields followed by inheritance chain.
-        J8c(b, Fic(a))        -> b.xx = object (wqb)
-        K8c(b, Fic(a), 10)    -> b.yy = object
-        L8c(b, Oic(a))        -> b.zz = boolean (via Oic)
-        M8c(b, Fic(a), 43)    -> b.aa = object (UDate)
-        N8c(b, Fic(a), 43)    -> b.ab = object (UDate)
-        O8c(b, Fic(a))        -> b.ac = object (wqb)
-        P8c(b, Oic(a))        -> b.ad = boolean (via Oic)
-        Q8c(b, Fic(a), 10)    -> b.ae = object
-        R8c(b, Mic(a, pop))   -> b.af = string (elevnr?)
-        S8c(b, Fic(a), 43)    -> b.ag = object (UDate)
-        T8c(b, Mic(a, pop))   -> b.ah = string
-        U8c(b, Fic(a), 10)    -> b.ai = object
-        V8c(b, Oic(a))        -> b.aj = boolean
-        W8c(b, Mic(a, pop))   -> b.ak = string (klasse?)
-        X8c(b, Fic(a), 43)    -> b.al = object (UDate)
-        Then Y8c - Bruger inheritance through intermediate class
+        16 own fields (was 15, new string field b.J added) + 24 Bruger base:
+        b.F = nqb(Gic(a))         -> object (cast boolean)
+        b.G = lqb(Gic(a),10)      -> object (ArrayList)
+        b.H = Pic(a)              -> boolean
+        b.I = lqb(Gic(a),43)      -> object (Long/Integer)
+        b.J = Nic(a,a.b[--a.a])   -> string (NEW!)
+        b.K = lqb(Gic(a),43)      -> object (Long/Integer)
+        b.L = nqb(Gic(a))         -> object (cast boolean)
+        b.M = Pic(a)              -> boolean
+        b.N = lqb(Gic(a),10)      -> object (ArrayList)
+        b.O = Nic(a,a.b[--a.a])   -> string (elevnr)
+        b.P = lqb(Gic(a),43)      -> object (Long/Integer)
+        b.Q = Nic(a,a.b[--a.a])   -> string
+        b.R = lqb(Gic(a),10)      -> object (ArrayList)
+        b.S = Pic(a)              -> boolean
+        b.T = Nic(a,a.b[--a.a])   -> string (klasse)
+        b.U = lqb(Gic(a),43)      -> object (Long/Integer)
+        A7c(a, b)                  -> Bruger base class (24 fields)
         """
-        J8c = self._read_object()    # object (wqb)
-        K8c = self._read_object()    # type 10
-        L8c = self._read_bool()      # boolean (Oic)
-        M8c = self._read_object()    # type 43 (UDate)
-        N8c = self._read_object()    # type 43 (UDate)
-        O8c = self._read_object()    # object (wqb)
-        P8c = self._read_bool()      # boolean (Oic)
-        Q8c = self._read_object()    # type 10
-        R8c = self._read_string()    # string (elevnr)
-        S8c = self._read_object()    # type 43 (UDate)
-        T8c = self._read_string()    # string
-        U8c = self._read_object()    # type 10
-        V8c = self._read_bool()      # boolean
-        W8c = self._read_string()    # string (klasse)
-        X8c = self._read_object()    # type 43 (UDate)
+        F = self._read_object()      # object (cast boolean)
+        G = self._read_object()      # ArrayList
+        H = self._read_bool()        # boolean
+        I = self._read_object()      # Long/Integer
+        J = self._read_string()      # string (NEW field)
+        K = self._read_object()      # Long/Integer
+        L = self._read_object()      # object (cast boolean)
+        M = self._read_bool()        # boolean
+        N = self._read_object()      # ArrayList
+        O = self._read_string()      # string (elevnr)
+        P = self._read_object()      # Long/Integer
+        Q = self._read_string()      # string
+        R = self._read_object()      # ArrayList
+        S = self._read_bool()        # boolean
+        T = self._read_string()      # string (klasse)
+        U = self._read_object()      # Long/Integer
 
-        # U7c (Bruger base - 15 fields) is called directly after X8c
         base = self._deserialize_bruger_base()
 
         return {
             '_class': 'Elev',
-            'elevnr': R8c,
-            'klasse': W8c,
+            'elevnr': O,
+            'klasse': T,
             'name': base.get('name', ''),
         }
 
@@ -1194,7 +1202,8 @@ class GWTDeserializer:
                 continue
 
             assignments.append({
-                'container_id': afl.get('container_id'),  # ID for RessourceService files
+                'container_id': afl.get('container_id'),  # ID for student's submitted files
+                'opgave_id': opgave.get('opgave_id'),  # ID for teacher's attached files
                 'subject': opgave.get('subject', ''),
                 'title': opgave.get('title', ''),
                 'description': opgave.get('description', ''),
@@ -1543,10 +1552,14 @@ class GWTDeserializer:
                 self.pos = pos
                 self.objects = []
                 note = self._deserialize_skema_note()
-                if note.get('plain_text') or note.get('html'):
+                has_content = (note.get('homework_text') or note.get('homework_html')
+                              or note.get('note_text') or note.get('note_html'))
+                if has_content:
                     notes.append(note)
                     if debug:
-                        print(f"DEBUG: Note at {pos}: date={note.get('date')}, text={str(note.get('plain_text', ''))[:50]}")
+                        hw = str(note.get('homework_text', ''))[:50]
+                        nt = str(note.get('note_text', ''))[:50]
+                        print(f"DEBUG: Note at {pos}: date={note.get('date')}, hw={hw}, note={nt}")
             except Exception as e:
                 if debug:
                     print(f"DEBUG: Error parsing note at pos {pos}: {e}")
@@ -1556,101 +1569,74 @@ class GWTDeserializer:
 
     def parse_lessons_direct(self, debug: bool = False) -> List[SkemaLesson]:
         """
-        Parse lessons by finding all SkemaBegivenhed markers and deserializing directly.
-
-        This bypasses the complex PersSkemaData wrapper structure while still using
-        the correct stack-based deserializers for each SkemaBegivenhed object.
+        Parse lessons using proper top-down deserialization of PersSkemaData.
 
         Also parses SkemaNote2 objects and attaches them to lessons by date + class.
         The matching uses (date, class_name) to ensure homework is only attached
         to the correct lesson, not all lessons on the same day.
         """
-        lessons = []
-
-        # First, parse all notes
+        # First, parse all notes (before main deserialization resets pos)
         notes = self._parse_all_notes(debug=debug)
-        if debug:
-            print(f"DEBUG: Parsed {len(notes)} notes total")
 
         # Group notes by (date, class_name) for robust matching
-        # Key: (date_str, class_name), Value: list of notes
         notes_by_date_class = {}
         for note in notes:
             note_date = note.get('date')
             note_class = note.get('class_name', '')
             if note_date:
-                # Convert datetime to date string (YYYY-MM-DD)
                 if hasattr(note_date, 'strftime'):
                     date_key = note_date.strftime('%Y-%m-%d')
                 else:
                     date_key = str(note_date)[:10]
 
-                # Create key using both date and class_name
                 key = (date_key, note_class)
                 if key not in notes_by_date_class:
                     notes_by_date_class[key] = []
                 notes_by_date_class[key].append(note)
 
-                if debug:
-                    print(f"DEBUG: Note indexed as ({date_key}, '{note_class}')")
+        # Reset state and do proper top-down deserialization
+        self.pos = len(self.data)
+        self.objects = []
 
-        if debug:
-            print(f"DEBUG: Notes grouped by (date, class): {list(notes_by_date_class.keys())}")
-
-        # Find SkemaBegivenhed class marker
-        skema_marker = None
-        for i, s in enumerate(self.strings):
-            if s.startswith('dk.uddata.model.skema.SkemaBegivenhed/'):
-                skema_marker = i + 1
-                break
-
-        if skema_marker is None:
+        try:
+            top = self._read_object()
+        except Exception as e:
             if debug:
-                print("DEBUG: SkemaBegivenhed not found in string table")
-            return lessons
+                print(f"DEBUG: Top-level deserialization failed: {e}")
+            return []
 
-        # Find all positions where SkemaBegivenhed marker appears
-        positions = [i for i, v in enumerate(self.data) if v == skema_marker]
-        if debug:
-            print(f"DEBUG: Found {len(positions)} SkemaBegivenhed instances")
+        # Extract lessons from PersSkemaData result
+        all_lessons = []
+        if isinstance(top, dict):
+            all_lessons = top.get('lessons', [])
 
-        # Deserialize each one
-        for pos in positions:
-            try:
-                self.pos = pos
-                self.objects = []  # Clear cache for each lesson
-                lesson = self._deserialize_skema_begivenhed()
-                if lesson.subject or lesson.rooms or lesson.teachers:
-                    # Attach notes to lesson by date + class_name (robust matching)
-                    if lesson.start_time:
-                        lesson_date = lesson.start_time.strftime('%Y-%m-%d')
-                        lesson_class = lesson.class_name or ''
+        # Filter to only SkemaLesson objects
+        lessons = [l for l in all_lessons if isinstance(l, SkemaLesson)]
 
-                        # Look for notes matching this lesson's date and class
-                        key = (lesson_date, lesson_class)
-                        if key in notes_by_date_class:
-                            for note in notes_by_date_class[key]:
-                                plain_text = note.get('plain_text', '')
-                                html_text = note.get('html', '')
-                                # Check if it's homework (contains "Lektier")
-                                if 'Lektier' in plain_text or 'Lektier' in str(html_text):
-                                    lesson.has_homework = True
-                                    lesson.homework = plain_text
-                                else:
-                                    # It's a note
-                                    lesson.has_note = True
-                                    if not lesson.note or lesson.note == lesson.subject:
-                                        lesson.note = plain_text or str(html_text)[:200]
-                                if debug:
-                                    print(f"DEBUG: Attached note to lesson {lesson.subject} ({lesson_class}) on {lesson_date}")
+        # Attach notes to lessons
+        for lesson in lessons:
+            if lesson.start_time:
+                lesson_date = lesson.start_time.strftime('%Y-%m-%d')
+                lesson_class = lesson.class_name or ''
 
-                    lessons.append(lesson)
-                    if debug:
-                        print(f"DEBUG: Lesson at {pos}: {lesson.subject} | class={lesson.class_name} | {lesson.rooms} | {lesson.teachers}")
-            except Exception as e:
-                if debug:
-                    print(f"DEBUG: Error at pos {pos}: {e}")
-                continue
+                key = (lesson_date, lesson_class)
+                if key in notes_by_date_class:
+                    for note in notes_by_date_class[key]:
+                        hw_text = note.get('homework_text', '') or ''
+                        hw_html = note.get('homework_html', '') or ''
+                        note_text = note.get('note_text', '') or ''
+                        note_html = note.get('note_html', '') or ''
+
+                        if hw_text or hw_html:
+                            lesson.has_homework = True
+                            lesson.homework = hw_text or hw_html[:200]
+                        if note_text or note_html:
+                            lesson.has_note = True
+                            if not lesson.note or lesson.note == lesson.subject:
+                                lesson.note = note_text or note_html[:200]
+                        if note.get('has_files'):
+                            lesson.has_files = True
+                            lesson.file_container_id = note.get('container_id', 0)
 
         return lessons
 

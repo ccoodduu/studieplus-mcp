@@ -340,34 +340,22 @@ async def get_notes_overview(
             }
 
 
-async def download_file(file_url: str, file_name: str, output_dir: str = "./downloads") -> dict:
+async def download_file(file_url: str, file_name: str, output_dir: str = None) -> dict:
     """
-    Download a file from a lesson to the downloads folder.
+    Download a file from a lesson to the user's computer.
 
     Args:
         file_url: URL of the file to download
         file_name: Name of the file
-        output_dir: Directory to save the file (default: ./downloads)
-
-    Returns:
-        {
-            'success': bool,
-            'file_path': str,
-            'file_name': str,
-            'file_size': int
-        }
-
-    Example:
-        result = await download_file("https://...", "rapport.pdf")
-        print(f"Downloaded to: {result['file_path']}")
+        output_dir: Absolute path to save directory (default: user's Downloads folder)
     """
-    async with get_scraper() as scraper:
-        result = await scraper.download_lesson_file(
-            file_url=file_url,
-            file_name=file_name,
-            output_dir=output_dir
-        )
-        return result
+    scraper = get_scraper()
+    result = await scraper.download_lesson_file(
+        file_url=file_url,
+        file_name=file_name,
+        output_dir=output_dir
+    )
+    return result
 
 
 async def load_file(file_url: str, file_name: str) -> dict:
@@ -401,42 +389,29 @@ async def load_file(file_url: str, file_name: str) -> dict:
         return result
 
 
-async def get_lesson_files(lesson_id: int) -> dict:
+async def get_lesson_files(lesson_id: int = None, file_container_id: int = None) -> dict:
     """
     Get files attached to a lesson with download URLs.
 
     Args:
-        lesson_id: The lesson ID (from the 'lesson_id' field in schedule)
-
-    Returns:
-        {
-            'lesson_id': int,
-            'count': int,
-            'files': [
-                {
-                    'name': str,
-                    'id': int,
-                    'url': str  # Signed S3 URL, valid for ~5 minutes
-                }
-            ]
-        }
-
-    Example:
-        files = await get_lesson_files(7620074)
-        for f in files['files']:
-            print(f"{f['name']}: {f['url']}")
+        lesson_id: The lesson/skema event ID (from lessons with has_files=True)
+        file_container_id: Deprecated alias for lesson_id
     """
+    lid = lesson_id or file_container_id
+    if not lid:
+        return {'count': 0, 'files': [], 'error': 'No lesson_id provided'}
+
     scraper = get_scraper()
     if hasattr(scraper, 'get_lesson_files_with_urls'):
-        files = scraper.get_lesson_files_with_urls(lesson_id)
+        files = scraper.get_lesson_files_with_urls(lid)
         return {
-            'lesson_id': lesson_id,
+            'lesson_id': lid,
             'count': len(files),
             'files': files
         }
     else:
         return {
-            'lesson_id': lesson_id,
+            'lesson_id': lid,
             'count': 0,
             'files': [],
             'error': 'File API not available with Playwright scraper'
@@ -709,7 +684,7 @@ async def get_day_overview(day_offset: int = 0) -> dict:
         # Clean up lesson data for output
         clean_lessons = []
         for l in day_lessons:
-            clean_lessons.append({
+            lesson_data = {
                 'time': l.get('time'),
                 'subject': l.get('subject'),
                 'teacher': l.get('teacher'),
@@ -718,9 +693,11 @@ async def get_day_overview(day_offset: int = 0) -> dict:
                 'has_homework': l.get('has_homework', False),
                 'has_note': l.get('has_note', False),
                 'has_files': l.get('has_files', False),
-                'homework': l.get('homework', ''),  # Homework text
-                'note': l.get('note', ''),  # Note text
-            })
+                'homework': l.get('homework', ''),
+                'note': l.get('note', ''),
+            }
+            # lesson_id is used for get_lesson_files when has_files=True
+            clean_lessons.append(lesson_data)
 
         # First and last lesson info
         first_lesson = None
@@ -788,7 +765,7 @@ async def get_week_overview(week_offset: int = 0) -> dict:
             # Clean up lessons
             clean_lessons = []
             for l in date_lessons:
-                clean_lessons.append({
+                lesson_data = {
                     'time': l.get('time'),
                     'subject': l.get('subject'),
                     'teacher': l.get('teacher'),
@@ -797,9 +774,12 @@ async def get_week_overview(week_offset: int = 0) -> dict:
                     'has_homework': l.get('has_homework', False),
                     'has_note': l.get('has_note', False),
                     'has_files': l.get('has_files', False),
-                    'homework': l.get('homework', ''),  # Homework text
-                    'note': l.get('note', ''),  # Note text
-                })
+                    'homework': l.get('homework', ''),
+                    'note': l.get('note', ''),
+                }
+                if l.get('file_container_id'):
+                    lesson_data['file_container_id'] = l['file_container_id']
+                clean_lessons.append(lesson_data)
 
             days.append({
                 'date': date_str,
