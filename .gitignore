@@ -28,9 +28,8 @@ find_*.py
 parse_*.py
 simple_*.py
 
-# Debug output folder (keep .gitkeep)
-debug/*
-!debug/.gitkeep
+# Debug output
+debug/
 
 # GWT reverse engineering files (JS source analysis)
 gwt_analysis/

@@ -143,18 +143,12 @@ class GWTDeserializer:
         # Stack pointer starts at end of data (read backwards)
         self.pos = len(self.data)
 
-    def _pop(self, debug: bool = False) -> Any:
+    def _pop(self) -> Any:
         """Pop a value from the stack (a.b[--a.a] in JS)."""
         self.pos -= 1
         if self.pos < 0:
             raise ValueError("Stack underflow")
-        val = self.data[self.pos]
-        if debug:
-            str_hint = ""
-            if isinstance(val, int) and 0 < val <= len(self.strings):
-                str_hint = f" = {self.strings[val-1][:40]}"
-            print(f"  POP [{self.pos}] = {val}{str_hint}")
-        return val
+        return self.data[self.pos]
 
     def _peek(self, offset: int = 0) -> Any:
         """Peek at a value without popping."""
@@ -266,7 +260,6 @@ class GWTDeserializer:
         try:
             obj = deserializer()
         except Exception as e:
-            print(f"ERROR deserializing {class_str}: {e} at pos={self.pos}")
             obj = {'_class': class_str, '_error': str(e)}
         self.objects[obj_idx] = obj
 
@@ -289,17 +282,13 @@ class GWTDeserializer:
             result.append(item)
         return result
 
-    def _deserialize_hashmap(self, debug: bool = False) -> dict:
+    def _deserialize_hashmap(self) -> dict:
         """Deserialize HashMap - just read count and key/value pairs."""
         count = self._pop()
-        if debug:
-            print(f"DEBUG HashMap: count={count}, pos={self.pos}")
         result = {}
         for i in range(count):
             key = self._read_object()
             value = self._read_object()
-            if debug and i < 3:
-                print(f"DEBUG HashMap pair {i}: key={key}, value={value}")
             if key is not None:
                 result[str(key)] = value
         return result
@@ -312,7 +301,7 @@ class GWTDeserializer:
         """Deserialize Boolean wrapper."""
         return self._read_bool()
 
-    def _deserialize_pers_skema_data(self, debug: bool = False) -> dict:
+    def _deserialize_pers_skema_data(self) -> dict:
         """
         Deserialize PersSkemaData (Dmg function in new JS).
 
@@ -1110,7 +1099,7 @@ class GWTDeserializer:
             'end': end,
         }
 
-    def parse_assignments(self, debug: bool = False, only_open: bool = False) -> List[dict]:
+    def parse_assignments(self, only_open: bool = False) -> List[dict]:
         """
         Parse assignment (Aflevering) objects from GWT response.
 
@@ -1138,17 +1127,10 @@ class GWTDeserializer:
         try:
             root = self._read_object()
         except Exception as e:
-            if debug:
-                print(f"DEBUG: Error parsing root: {e}")
             return []
 
         if not isinstance(root, list):
-            if debug:
-                print(f"DEBUG: Root is not a list: {type(root)}")
             return []
-
-        if debug:
-            print(f"DEBUG: Parsed {len(root)} Aflevering objects from root")
 
         # Extract OpgaveElev from each Aflevering
         assignments = []
@@ -1216,12 +1198,9 @@ class GWTDeserializer:
                 'submission_date': submission_date_str,
             })
 
-            if debug:
-                print(f"DEBUG: Extracted: {opgave.get('subject')} - {opgave.get('title')} (submitted={submitted})")
-
         return assignments
 
-    def parse_single_aflevering(self, debug: bool = False) -> dict:
+    def parse_single_aflevering(self) -> dict:
         """
         Parse a single Aflevering from getAflevering response.
 
@@ -1233,13 +1212,9 @@ class GWTDeserializer:
         try:
             afl = self._read_object()
         except Exception as e:
-            if debug:
-                print(f"DEBUG: Error parsing aflevering: {e}")
             return {}
 
         if not isinstance(afl, dict) or afl.get('_class') != 'Aflevering':
-            if debug:
-                print(f"DEBUG: Root is not Aflevering: {type(afl)}")
             return {}
 
         opgave = afl.get('opgave_elev')
@@ -1277,7 +1252,7 @@ class GWTDeserializer:
             'bedoemmelse': afl.get('bedoemmelse'),
         }
 
-    def parse_assignments_direct(self, debug: bool = False) -> List[dict]:
+    def parse_assignments_direct(self) -> List[dict]:
         """
         Parse assignments by directly finding and deserializing OpgaveElev objects.
 
@@ -1294,17 +1269,10 @@ class GWTDeserializer:
                 break
 
         if opgave_marker is None:
-            if debug:
-                print("DEBUG: OpgaveElev not found in string table")
             return assignments
-
-        if debug:
-            print(f"DEBUG: OpgaveElev marker = {opgave_marker}")
 
         # Find all positions where OpgaveElev marker appears
         positions = [i for i, v in enumerate(self.data) if v == opgave_marker]
-        if debug:
-            print(f"DEBUG: Found {len(positions)} OpgaveElev instances")
 
         # Deserialize each OpgaveElev
         for pos in positions:
@@ -1335,12 +1303,7 @@ class GWTDeserializer:
                         'week': str(opgave.get('week', '')),
                     })
 
-                    if debug:
-                        print(f"DEBUG: Parsed assignment at {pos}: {opgave.get('subject')} - {opgave.get('title')}")
-
             except Exception as e:
-                if debug:
-                    print(f"DEBUG: Error at pos {pos}: {e}")
                 continue
 
         # Remove duplicates (same subject + title)
@@ -1365,37 +1328,19 @@ class GWTDeserializer:
             for value in obj.values():
                 self._extract_lessons_recursive(value, lessons)
 
-    def parse_lessons(self, debug: bool = False) -> List[SkemaLesson]:
+    def parse_lessons(self) -> List[SkemaLesson]:
         """Parse all lessons from the response."""
         lessons = []
 
-        # The response contains a top-level PersSkemaData object
         try:
-            if debug:
-                print(f"DEBUG: Starting parse, pos={self.pos}")
-                print(f"DEBUG: First few values at stack top: {self.data[self.pos-5:self.pos]}")
-
             result = self._read_object()
-
-            if debug:
-                print(f"DEBUG: Result type: {type(result)}")
-
-            # Recursively extract all SkemaLesson objects from the entire object graph
             self._extract_lessons_recursive(result, lessons)
-
-            if debug:
-                print(f"DEBUG: Found {len(lessons)} lessons total")
-                print(f"DEBUG: Final position: {self.pos} (should be near 0)")
-                print(f"DEBUG: Object cache size: {len(self.objects)}")
-
         except Exception as e:
-            import traceback
-            print(f"Parse error: {e}")
-            traceback.print_exc()
+            pass
 
         return lessons
 
-    def _parse_all_notes(self, debug: bool = False) -> List[dict]:
+    def _parse_all_notes(self) -> List[dict]:
         """Parse all SkemaNote2 objects from the response."""
         notes = []
 
@@ -1407,14 +1352,10 @@ class GWTDeserializer:
                 break
 
         if note_marker is None:
-            if debug:
-                print("DEBUG: SkemaNote2 not found in string table")
             return notes
 
         # Find all positions where SkemaNote2 marker appears
         positions = [i for i, v in enumerate(self.data) if v == note_marker]
-        if debug:
-            print(f"DEBUG: Found {len(positions)} SkemaNote2 instances")
 
         # Deserialize each one
         for pos in positions:
@@ -1426,18 +1367,12 @@ class GWTDeserializer:
                               or note.get('note_text') or note.get('note_html'))
                 if has_content:
                     notes.append(note)
-                    if debug:
-                        hw = str(note.get('homework_text', ''))[:50]
-                        nt = str(note.get('note_text', ''))[:50]
-                        print(f"DEBUG: Note at {pos}: date={note.get('date')}, hw={hw}, note={nt}")
             except Exception as e:
-                if debug:
-                    print(f"DEBUG: Error parsing note at pos {pos}: {e}")
                 continue
 
         return notes
 
-    def parse_lessons_direct(self, debug: bool = False) -> List[SkemaLesson]:
+    def parse_lessons_direct(self) -> List[SkemaLesson]:
         """
         Parse lessons using proper top-down deserialization of PersSkemaData.
 
@@ -1446,7 +1381,7 @@ class GWTDeserializer:
         to the correct lesson, not all lessons on the same day.
         """
         # First, parse all notes (before main deserialization resets pos)
-        notes = self._parse_all_notes(debug=debug)
+        notes = self._parse_all_notes()
 
         # Group notes by (date, class_name) for robust matching
         notes_by_date_class = {}
@@ -1471,8 +1406,6 @@ class GWTDeserializer:
         try:
             top = self._read_object()
         except Exception as e:
-            if debug:
-                print(f"DEBUG: Top-level deserialization failed: {e}")
             return []
 
         # Extract lessons from PersSkemaData result
@@ -1521,7 +1454,7 @@ def parse_schedule_response(response: str) -> List[SkemaLesson]:
     return parser.parse_lessons_direct()
 
 
-def parse_assignments_response(response: str, debug: bool = False) -> List[dict]:
+def parse_assignments_response(response: str) -> List[dict]:
     """Parse a StudiePlus assignments (Opgaver) GWT response.
 
     Uses stack-based deserialization following the exact GWT deserializer logic
@@ -1538,26 +1471,4 @@ def parse_assignments_response(response: str, debug: bool = False) -> List[dict]
     - week: Week number
     """
     parser = GWTDeserializer(response)
-    return parser.parse_assignments(debug=debug)
-
-
-# Backwards compatibility
-GWTResponseParser = GWTDeserializer
-GWTScheduleParser = GWTDeserializer
-
-
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1:
-        with open(sys.argv[1], 'r', encoding='utf-8') as f:
-            response = f.read()
-
-        lessons = parse_schedule_response(response)
-        print(f"Found {len(lessons)} lessons")
-        print()
-
-        for lesson in lessons:
-            print(lesson)
-    else:
-        print("Usage: python gwt_deserializer.py <response_file>")
+    return parser.parse_assignments()
