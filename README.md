@@ -1,49 +1,43 @@
-# Studie+ MCP Server 🎒
+# Studie+ MCP Server
 
-MCP server for checking homework from Studie+ (Danish education platform). Works seamlessly with Claude Desktop to check your assignments!
+MCP server der giver Claude Desktop (og andre MCP-klienter) adgang til skoledata fra [Studie+](https://studieplus.dk) — den danske skoleplatform.
+
+Spørg Claude om dit skema, lektier, afleveringer og filer direkte i chatten.
 
 ## Features
 
-✅ **Check all homework** - Get complete list of assignments from Assignments page
-✅ **Schedule homework** - Get homework and notes directly from the weekly schedule (skema)
-✅ **Upcoming deadlines** - Filter by deadline (next 7 days, etc.)
-✅ **Filter by subject** - See assignments for specific subjects
-✅ **Assignment details** - Get full description and files for any assignment
-✅ **Headless scraping** - No browser window, runs in background
-✅ **Fast & efficient** - Optimized Playwright scraper
+- **Dagsoverblik** — skema, lektier, noter og afleveringer for en given dag
+- **Ugeoverblik** — komplet ugeskema med lektier og deadlines
+- **Afleveringer** — filtrer på fag, deadline, eller vis alle
+- **Afleveringsdetaljer** — beskrivelse, filer og status
+- **Lektionsfiler** — hent filer fra lektioner med signerede download-URLs
+- **Fil-download** — download filer direkte til din computer
+- **Letvægts-scraper** — bruger HTTP direkte (ingen browser, ~30MB RAM)
+- **Cross-platform** — virker på Windows, Mac og Linux
 
 ## Setup
 
-### 1. Install Dependencies
+### 1. Installer dependencies
 
 ```bash
 cd studieplus-mcp
 pip install -r requirements.txt
-playwright install chromium
 ```
 
-### 2. Configure Credentials
+### 2. Konfigurer credentials
 
-Create `.env` file:
+Opret en `.env` fil:
 ```
-STUDIEPLUS_USERNAME=your_username
-STUDIEPLUS_PASSWORD=your_password
+STUDIEPLUS_USERNAME=dit_brugernavn
+STUDIEPLUS_PASSWORD=dit_kodeord
 STUDIEPLUS_SCHOOL=DIN_SKOLE
 ```
 
-### 3. Test the Scraper
+### 3. Tilføj til Claude Desktop
 
-```bash
-python src/studieplus_scraper/scraper.py
-```
-
-### 4. Add to Claude Desktop
-
-Edit Claude Desktop config file:
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-**Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-Add this configuration:
+Rediger Claude Desktop config:
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
@@ -54,8 +48,8 @@ Add this configuration:
         "/sti/til/studieplus-mcp/src/mcp_server/server.py"
       ],
       "env": {
-        "STUDIEPLUS_USERNAME": "your_username",
-        "STUDIEPLUS_PASSWORD": "your_password",
+        "STUDIEPLUS_USERNAME": "dit_brugernavn",
+        "STUDIEPLUS_PASSWORD": "dit_kodeord",
         "STUDIEPLUS_SCHOOL": "DIN_SKOLE"
       }
     }
@@ -63,30 +57,66 @@ Add this configuration:
 }
 ```
 
-**⚠️ IMPORTANT**: Update the path in `args` to match your actual installation directory!
+> Udskift `/sti/til/studieplus-mcp` med den faktiske sti til projektet.
 
-### 5. Restart Claude Desktop
+### 4. Genstart Claude Desktop
 
-Restart Claude Desktop to load the MCP server.
+Genstart Claude Desktop for at indlæse MCP serveren.
 
-## Usage in Claude
+## Brug
 
-Once installed, you can ask Claude:
+Når serveren er installeret, kan du spørge Claude:
 
-- "Hvad er mine lektier?" (What's my homework?)
-- "Hvilke opgaver har jeg i matematik?" (What assignments do I have in math?)
-- "Hvad skal jeg lave i de næste 7 dage?" (What do I need to do in the next 7 days?)
-- "Har jeg deadlines snart?" (Do I have upcoming deadlines?)
+- "Hvad har jeg i dag?"
+- "Har jeg lektier til i morgen?"
+- "Hvad skal jeg aflevere?"
+- "Hvilket lokale skal jeg møde i?"
+- "Hvornår starter jeg i morgen?"
+- "Har jeg dansk afleveringer?"
+- "Hvad har jeg i næste uge?"
+- "Download filerne fra min dansktime"
 
-## Available MCP Tools
+## MCP Tools
 
-1. **`get_homework()`** - Get all homework assignments
-2. **`get_upcoming_homework(days=7)`** - Get assignments due within N days
-3. **`get_homework_by_subject(subject)`** - Filter assignments by subject
-4. **`get_assignment_details(assignment_id)`** - Get detailed info (description & files) for a specific assignment
+| Tool | Beskrivelse |
+|------|-------------|
+| `get_day_overview(day_offset)` | Skema, lektier, noter og afleveringer for en dag |
+| `get_week_overview(week_offset)` | Komplet ugeoverblik |
+| `get_assignments(include_submitted, days_ahead, subject)` | Afleveringer med filtrering |
+| `get_assignment_details(assignment_id)` | Detaljer for en specifik aflevering |
+| `get_lesson_files(lesson_id)` | Filer fra en lektion med download-URLs |
+| `download_lesson_file(file_url, file_name)` | Download en fil til brugerens computer |
+| `load_lesson_file(file_url, file_name)` | Indlæs filindhold direkte |
 
-## Components
+## Arkitektur
 
-- **src/studieplus_scraper/scraper.py**: Playwright-based headless scraper
-- **src/mcp_server/server.py**: MCP server with FastMCP
-- **analyze_traffic.py**: Network traffic analyzer (dev tool)
+```
+src/
+  mcp_server/
+    server.py              # MCP tools (thin wrapper)
+  studieplus_scraper/
+    requests_scraper.py    # HTTP-baseret GWT-RPC scraper
+    gwt_deserializer.py    # Stack-baseret GWT response parser
+    api.py                 # API lag (business logic, caching)
+    scraper.py             # Playwright-baseret scraper (outdated, fallback)
+```
+
+Scraperen kommunikerer direkte med Studie+ via GWT-RPC protokollen — ingen browser nødvendig.
+
+> **Note:** Der findes også en Playwright-baseret scraper (`scraper.py`) som kan bruges som fallback. Den er outdated og mangler nogle features, men kan aktiveres med `USE_PLAYWRIGHT_SCRAPER=true`. Kræver `pip install playwright && playwright install chromium`.
+
+## Transport
+
+Serveren understøtter to transport-modes:
+
+- **stdio** (default) — til Claude Desktop
+- **SSE** — til Docker/Raspberry Pi deployment
+
+```bash
+# SSE mode
+MCP_TRANSPORT=sse MCP_PORT=8101 python src/mcp_server/server.py
+```
+
+## Licens
+
+MIT
