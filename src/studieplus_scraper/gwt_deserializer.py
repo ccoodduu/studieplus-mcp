@@ -1033,50 +1033,51 @@ class GWTDeserializer:
 
     def _deserialize_bruger_elev(self) -> dict:
         """
-        Deserialize Elev (m8c function in fresh assignment JS).
+        Deserialize Elev (O7c function in fresh opgave cache.js).
 
-        16 own fields (was 15, new string field b.J added) + 24 Bruger base:
-        b.F = nqb(Gic(a))         -> object (cast boolean)
-        b.G = lqb(Gic(a),10)      -> object (ArrayList)
-        b.H = Pic(a)              -> boolean
-        b.I = lqb(Gic(a),43)      -> object (Long/Integer)
-        b.J = Nic(a,a.b[--a.a])   -> string (NEW!)
-        b.K = lqb(Gic(a),43)      -> object (Long/Integer)
-        b.L = nqb(Gic(a))         -> object (cast boolean)
-        b.M = Pic(a)              -> boolean
-        b.N = lqb(Gic(a),10)      -> object (ArrayList)
-        b.O = Nic(a,a.b[--a.a])   -> string (elevnr)
-        b.P = lqb(Gic(a),43)      -> object (Long/Integer)
-        b.Q = Nic(a,a.b[--a.a])   -> string
-        b.R = lqb(Gic(a),10)      -> object (ArrayList)
-        b.S = Pic(a)              -> boolean
-        b.T = Nic(a,a.b[--a.a])   -> string (klasse)
-        b.U = lqb(Gic(a),43)      -> object (Long/Integer)
-        A7c(a, b)                  -> Bruger base class (24 fields)
+        17 own fields + 24 Bruger base (a7c):
+         1. R7c = xqb(hic(a))        -> object (cast)
+         2. S7c = vqb(hic(a),10)     -> object type 10
+         3. T7c = qic(a)             -> boolean
+         4. U7c = vqb(hic(a),46)     -> object type 46
+         5. V7c = oic(a,pop)         -> string
+         6. W7c = vqb(hic(a),46)     -> object type 46
+         7. X7c = xqb(hic(a))        -> object (cast)
+         8. Y7c = qic(a)             -> boolean
+         9. Z7c = vqb(hic(a),10)     -> object type 10
+        10. $7c = oic(a,pop)         -> string (elevnr)
+        11. _7c = vqb(hic(a),46)     -> object type 46
+        12. a8c = oic(a,pop)         -> string
+        13. b8c = oic(a,pop)         -> string  (MISSING in old code!)
+        14. c8c = vqb(hic(a),10)     -> object type 10
+        15. d8c = qic(a)             -> boolean
+        16. e8c = oic(a,pop)         -> string
+        17. f8c = vqb(hic(a),46)     -> object type 46
+        a7c(a, b)                     -> Bruger base class (24 fields)
         """
-        F = self._read_object()      # object (cast boolean)
-        G = self._read_object()      # ArrayList
-        H = self._read_bool()        # boolean
-        I = self._read_object()      # Long/Integer
-        J = self._read_string()      # string (NEW field)
-        K = self._read_object()      # Long/Integer
-        L = self._read_object()      # object (cast boolean)
-        M = self._read_bool()        # boolean
-        N = self._read_object()      # ArrayList
-        O = self._read_string()      # string (elevnr)
-        P = self._read_object()      # Long/Integer
-        Q = self._read_string()      # string
-        R = self._read_object()      # ArrayList
-        S = self._read_bool()        # boolean
-        T = self._read_string()      # string (klasse)
-        U = self._read_object()      # Long/Integer
+        R7c = self._read_object()    # 1.  object (cast)
+        S7c = self._read_object()    # 2.  object type 10
+        T7c = self._read_bool()      # 3.  boolean
+        U7c = self._read_object()    # 4.  object type 46
+        V7c = self._read_string()    # 5.  string
+        W7c = self._read_object()    # 6.  object type 46
+        X7c = self._read_object()    # 7.  object (cast)
+        Y7c = self._read_bool()      # 8.  boolean
+        Z7c = self._read_object()    # 9.  object type 10
+        dollar7c = self._read_string()  # 10. string (elevnr)
+        _7c = self._read_object()    # 11. object type 46
+        a8c = self._read_string()    # 12. string
+        b8c = self._read_string()    # 13. string  (was missing!)
+        c8c = self._read_object()    # 14. object type 10
+        d8c = self._read_bool()      # 15. boolean
+        e8c = self._read_string()    # 16. string
+        f8c = self._read_object()    # 17. object type 46
 
         base = self._deserialize_bruger_base()
 
         return {
             '_class': 'Elev',
-            'elevnr': O,
-            'klasse': T,
+            'elevnr': dollar7c,
             'name': base.get('name', ''),
         }
 
