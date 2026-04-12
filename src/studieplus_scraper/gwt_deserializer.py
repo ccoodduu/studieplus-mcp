@@ -895,16 +895,17 @@ class GWTDeserializer:
 
         return {
             '_class': 'OpgaveElev',
-            'opgave_id': g,  # b.g = OpgaveElev ID (used for getAflevering call)
-            'subject': v,  # Data shows v contains subject (e.g., "Matematik")
-            'title': A,    # Data shows A contains title (e.g., "Aflevering 4, 1.g")
+            'opgave_id': g,
+            'teacher_file_container_id': t,  # b.t = OPGA container for teacher-attached files (bId in JS)
+            'subject': v,
+            'title': A,
             'budget_hours': n,
             'spent_hours': o,
             'week': r,
-            'start_date': C,  # b.C = UDate (often null)
-            'deadline': f,    # b.f = deadline shown in UI (lvc(b.f) in vQc line 46139)
-            'class_name': i,  # i = class name like "htxqr24"
-            'description': k,  # k = description HTML
+            'start_date': C,
+            'deadline': f,
+            'class_name': i,
+            'description': k,
         }
 
     def _deserialize_aflevering_bedoemmelse(self) -> dict:
@@ -1185,8 +1186,9 @@ class GWTDeserializer:
                 continue
 
             assignments.append({
-                'container_id': afl.get('container_id'),  # ID for student's submitted files
-                'opgave_id': opgave.get('opgave_id'),  # ID for teacher's attached files
+                'container_id': afl.get('container_id'),  # ID for student's submitted files (Aflevering.d)
+                'opgave_id': opgave.get('opgave_id'),  # OpgaveElev.g — shared across assignments for same subject
+                'teacher_file_container_id': opgave.get('teacher_file_container_id'),  # OpgaveElev.t — per-assignment teacher file container
                 'subject': opgave.get('subject', ''),
                 'title': opgave.get('title', ''),
                 'description': opgave.get('description', ''),

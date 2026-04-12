@@ -220,6 +220,7 @@ async def get_assignments(
         # Remove internal IDs (id is used instead)
         assignment.pop('container_id', None)
         assignment.pop('opgave_id', None)
+        assignment.pop('teacher_file_container_id', None)
 
     return clean_for_llm(result)
 

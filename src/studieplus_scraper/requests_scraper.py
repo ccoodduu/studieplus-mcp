@@ -1010,22 +1010,20 @@ class StudiePlusRequestsScraper(BaseStudiePlusScraper):
                 return {'error': f'Assignment not found with id {assignment_id}'}
 
             container_id = assignment.get('container_id')
-            opgave_id = assignment.get('opgave_id')
+            teacher_container_id = assignment.get('teacher_file_container_id')
 
-            # Get files from both sources:
-            # - container_id: student's submitted files
-            # - opgave_id: teacher's attached files (assignment materials)
+            # Two separate ressource containers:
+            # - teacher_file_container_id (OpgaveElev.t): teacher-attached materials (bId in JS)
+            # - container_id (Aflevering.d): student's submitted files (dId in JS)
             files = []
 
-            # Teacher files (from opgave_id)
-            if opgave_id:
-                teacher_files = self.get_assignment_files(opgave_id)
+            if teacher_container_id:
+                teacher_files = self.get_assignment_files(teacher_container_id)
                 for f in teacher_files:
                     f['source'] = 'teacher'
                 files.extend(teacher_files)
-                logger.info(f"Found {len(teacher_files)} teacher files for opgave_id={opgave_id}")
+                logger.info(f"Found {len(teacher_files)} teacher files for teacher_container_id={teacher_container_id}")
 
-            # Student files (from container_id)
             if container_id:
                 student_files = self.get_assignment_files(container_id)
                 for f in student_files:
