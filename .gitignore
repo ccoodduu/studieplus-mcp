@@ -18,8 +18,8 @@ build/
 playwright-state/
 .claude/
 
-# Test files
-test_*.py
+# Root-level debug/trace scripts (proper tests live in tests/)
+/test_*.py
 
 # Temporary analysis and debug files
 analyze_*.py
