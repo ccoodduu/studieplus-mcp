@@ -219,3 +219,121 @@ rg "^function [A-Z][a-z]+\(" source_clean.js -A 2 | grep "a\."
 - **Ingen felt-navne i wire-format** - må udledes fra JS
 - **Versionering** - GWT kan ændre serialiseringsformat
 - **Nested kompleksitet** - dybt nestede objekter kræver rekursiv analyse
+
+## Debug-metodik når noget pludselig returnerer tom
+
+Når en parser stille begynder at returnere `[]` eller `None` uden at crashe, er
+det næsten altid fordi serveren har tilføjet/fjernet et felt og forskudt
+stack-pointeren. Symptomerne kaskader: én manglende `_read_string()` får alle
+efterfølgende objekter til at læse på forkert offset, og typiske resultater er
+tomme ArrayLists hvor der burde være objekter, eller ints hvor der burde være
+strings.
+
+### 1. Verificér at lokal JS matcher serverens version
+
+`gwt_analysis/*.js` er snapshots. Hashene roterer når serveren opdateres. Tjek:
+
+```python
+# I live response
+strings[0]  # fx "java.util.ArrayList/4159755760"
+
+# Match i lokal JS
+grep -F "Aflevering/2377986334" gwt_analysis/assignment_source_*.js
+```
+
+Hvis hashen ikke matcher nogen lokal fil, hent live cache.js:
+
+```python
+s._ensure_hashes('opgave')
+url = f"{s.base_url}/opgave/opgave/{s.opgave_permutation}.cache.js"
+resp = s.session.get(url)
+open('gwt_analysis/opgave_live.cache.js', 'w', encoding='utf-8').write(resp.text)
+```
+
+### 2. Genfind helper-funktioner i den nye JS
+
+Mellem minificerede versioner roterer navnene på primitiv-læsere. Eksempel:
+
+| Gammel JS | Ny JS |
+|-----------|-------|
+| `Pic` = Number | `Pic` = boolean |
+| `Oic` = boolean | `Qic` = Number |
+| `Gic` = read object | `kic` = read object |
+| `Mic` / `Nic` = string | `ric` = string |
+| `lqb` / `nqb` = type cast | `tqb` / `vqb` = type cast |
+
+Stol ALDRIG på kommentarer der siger "Pic = float". Verificér i den aktuelle
+cache.js:
+
+```python
+# Find readers ved deres signatur (returnerer Number/!!)
+re.findall(r'function (\w+)\([^)]*\)\{return Number\(a\.b\[--a\.a\]\)\}', content)
+re.findall(r'function (\w+)\([^)]*\)\{return !!a\.b\[--a\.a\]\}', content)
+```
+
+### 3. Find class hash → variable → deserializer
+
+```python
+# Hash → variable (zCe = OpgaveElev/3004648144)
+re.search(r"(\w+)='[^']*OpgaveElev/3004648144'", content)
+
+# Variable → registrering (a[zCe]=[INSTANTIATE,DESERIALIZE,SERIALIZE])
+re.search(r'a\[zCe\]\s*=\s*\[(\w+),(\w+),(\w+)\]', content)
+
+# Find deserializer-body
+re.search(r'function Ohd\s*\([^)]*\)\s*\{[^}]*\}', content)
+```
+
+Tæl felt-kald i deserializer-body. Hver linje med en setter (`Mhd(b,...)`,
+`Nhd(b,...)` osv.) er ét felt. Sammenlign med antallet af reads i Python-koden.
+
+### 4. Trace pops mod live-data
+
+Når feltantallet er rigtigt men resultatet stadig er forkert, instrumentér
+`_pop`:
+
+```python
+orig_pop = d._pop
+log = []
+def traced_pop():
+    pos = d.pos - 1
+    val = orig_pop()
+    note = ''
+    if isinstance(val, int) and 0 < val <= len(d.strings):
+        s = d.strings[val-1]
+        if '/' in s: note = f'  CLASS:{s.split("/")[0]}'
+        elif s and len(s) < 30: note = f'  STR:{s!r}'
+    log.append((pos, val, note))
+    return val
+d._pop = traced_pop
+```
+
+Kald så deserializeren én gang og inspicér `log`. Sammenhold med JS-funktionens
+felt-rækkefølge linje for linje.
+
+### 5. Top-down vs. scanner-baseret parsing
+
+Repoet har historisk haft begge mønstre:
+
+- **Scanner-baseret** (`_parse_all_notes`): find class-markøren i `data`, sæt
+  `pos` til den, deserialisér i isolation. Tabt parent-context.
+- **Top-down** (`parse_lessons_direct`): start fra response-roden og lad GWT's
+  egne struktur diktere hvor felter ligger. Bevarer parent-child-linkage.
+
+Foretræk top-down. Hvis et objekt ser ud til at være "uforbundet" til andre
+objekter, kig efter et HashMap-felt i forælderen — det er typisk linkage'en.
+Eksempel: `PersSkemaData.b.B` er `{lesson_id → SkemaNote2}`, så
+note↔lektion-koblingen er allerede i payloaden.
+
+### 6. Bemærkninger fra denne session
+
+- **Bruger base** voksede fra 24 → 25 felter (tilføjet `b.sb` string)
+- **Elev** voksede fra 16 → 17 egne felter (tilføjet string mellem `a8c` og `c8c`)
+- En `_deserialize_X`-metode der defineres TO gange i samme klasse: Python tager
+  den sidste — hold øje med duplikater
+- Fil-download virker via `lesson_id → hentNoteForSkema → file_container_id →
+  findRessourcerPerContainer → fileId → hentRessourceUrl → signeret S3-URL`
+  (5 minutters TTL)
+- Skema-flag `has_files` skal slås op via `PersSkemaData.b.B[lesson_id]`, ikke
+  via (dato, klasse). Sidstnævnte giver false positives når flere lektioner
+  deler klasse på samme dag
