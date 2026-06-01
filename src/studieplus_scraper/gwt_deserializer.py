@@ -91,6 +91,10 @@ class GWTDeserializer:
             'dk.uddata.model.skema.Frareg': self._deserialize_frareg,
             'dk.uddata.model.skema.Frareg$Status': self._deserialize_enum,
 
+            # Fraver types (absence — present only in weeks with registered fravær)
+            'dk.uddata.model.skema.Fraver': self._deserialize_fraver,
+            'dk.uddata.model.skema.Fraver$Status': self._deserialize_enum,
+
             # Fravk types
             'dk.uddata.model.skema.Fravk': self._deserialize_fravk,
             'dk.uddata.model.skema.Fravk$FravkStatus': self._deserialize_enum,
@@ -485,6 +489,32 @@ class GWTDeserializer:
         c = self._pop()          # int
         d = self._read_object()  # Status
         return {'_class': 'Frareg'}
+
+    def _deserialize_fraver(self) -> dict:
+        """
+        Deserialize Fraver (bdg function — absence registration).
+        b.? = CUb(jqd(a),7)    // object (UDate)
+        b.? = a.b[--a.a]       // int
+        b.? = a.b[--a.a]       // int
+        b.? = CUb(jqd(a),25)   // object
+        b.? = CUb(jqd(a),25)   // object
+        b.? = a.b[--a.a]       // int
+        b.? = qqd(a, pop)      // string
+        b.? = qqd(a, pop)      // string
+        b.? = a.b[--a.a]       // int
+        b.? = CUb(jqd(a),225)  // object (Fraver$Status)
+        """
+        self._read_object()  # UDate
+        self._pop()          # int
+        self._pop()          # int
+        self._read_object()  # object
+        self._read_object()  # object
+        self._pop()          # int
+        self._read_string()  # string
+        self._read_string()  # string
+        self._pop()          # int
+        self._read_object()  # Fraver$Status
+        return {'_class': 'Fraver'}
 
     def _deserialize_fravk(self) -> dict:
         """
