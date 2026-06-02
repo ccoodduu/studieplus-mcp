@@ -95,6 +95,34 @@ Gyldige i ~5 minutter.
 
 ---
 
+## Tests
+
+Live contract-tests der logger ind og kalder det rigtige Studie+ API. De asserter
+på *form* (typer, ranges, fornuftige værdier) — ikke specifikke værdier — for at
+fange når Studie+ ændrer deres GWT-struktur.
+
+### Kør tests
+```bash
+python -m pytest
+```
+Konfiguration ligger i `pytest.ini` (`testpaths = tests`, `asyncio_mode = auto`).
+
+### Krav
+- Credentials i `.env` i projektroden: `STUDIEPLUS_USERNAME`, `STUDIEPLUS_PASSWORD`,
+  `STUDIEPLUS_SCHOOL`. Mangler de, **skippes** testene (fejler ikke).
+- `requirements-dev.txt` skal være installeret (`pytest`, `pytest-asyncio`, `python-dotenv`).
+
+### Filer
+- `tests/conftest.py` — `scraper`-fixture (login) + shape-helpers
+  (`assert_lesson_shape`, `assert_assignment_shape`, `assert_file_shape`,
+  `looks_like_gwt_leak`).
+- `tests/test_live.py` — selve testene.
+
+**Bemærk:** Æ/ø/å vises som `�` i PowerShell-output pga. terminal-encoding —
+selve dataen er korrekt.
+
+---
+
 ## Vigtige Filer
 
 - `gwt_analysis/source_babel_inlined.js` — JS med inlinede funktioner (brug til analyse)
