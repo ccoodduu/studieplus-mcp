@@ -45,6 +45,24 @@ class GWTParser:
         data_str = content[:bracket_start].rstrip(',')
         self._parse_data(data_str)
 
+    @staticmethod
+    def _decode_escapes(raw: str) -> str:
+        """Resolve the backslash escapes GWT puts in string-table entries.
+
+        The response body has already been decoded from UTF-8 by the HTTP
+        layer, so `raw` is real text that may hold two kinds of characters:
+        escapes the server wrote (\\uXXXX, \\n, \\") and literal non-ASCII
+        characters it left as-is. Both occur — the schedule note service
+        escapes its Danish letters, the resource service does not.
+
+        The `unicode_escape` codec resolves the escapes but decodes its input
+        as Latin-1, so encoding with UTF-8 first turns a literal "ø" into
+        "Ã¸". Encoding to Latin-1 instead keeps every character below U+0100
+        on its own byte, and `backslashreplace` hands anything above it to the
+        codec as the \\uXXXX form it already understands.
+        """
+        return raw.encode('latin-1', 'backslashreplace').decode('unicode_escape')
+
     def _parse_string_table(self, s: str):
         """Parse the string table."""
         self.string_table = []
@@ -62,8 +80,8 @@ class GWTParser:
             elif char == '"':
                 if in_string:
                     try:
-                        decoded = current.encode().decode('unicode_escape')
-                    except:
+                        decoded = self._decode_escapes(current)
+                    except Exception:
                         decoded = current
                     self.string_table.append(decoded)
                     current = ""

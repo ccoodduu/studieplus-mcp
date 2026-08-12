@@ -99,9 +99,22 @@ def assert_assignment_shape(a: dict):
             f"deadline={a['deadline']!r} does not match 'dd.mm.yyyy hh:mm'"
 
 
+def looks_like_mojibake(value: str) -> bool:
+    """Return True if a string looks like UTF-8 that was decoded as Latin-1
+    ("øvelse" arriving as "Ã¸velse") — a sign the string table was decoded
+    with the wrong codec. Correctly decoded Danish text fails the round trip,
+    so it is not flagged."""
+    try:
+        return value.encode("latin-1").decode("utf-8") != value
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return False
+
+
 def assert_file_shape(f: dict):
     assert "name" in f and isinstance(f["name"], str) and f["name"]
     assert "id" in f and isinstance(f["id"], int) and f["id"] > 0
+    assert not looks_like_mojibake(f["name"]), \
+        f"File name {f['name']!r} looks like mojibake — string table decoded wrong?"
     if f.get("url"):
         assert f["url"].startswith("https://"), f"Suspicious URL: {f['url']!r}"
 
