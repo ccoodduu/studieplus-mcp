@@ -99,9 +99,21 @@ def assert_assignment_shape(a: dict):
             f"deadline={a['deadline']!r} does not match 'dd.mm.yyyy hh:mm'"
 
 
+# UTF-8 bytes decoded as latin-1 turn 'ø' into 'Ã¸', 'æ' into 'Ã¦' and so on.
+# These sequences never occur in real Danish text, so their presence means a
+# string was decoded with the wrong charset somewhere in the parser.
+MOJIBAKE_RE = re.compile(r"[ÃÂ][\x80-\xbf]")
+
+
+def assert_no_mojibake(value: str, field: str):
+    assert not MOJIBAKE_RE.search(value), \
+        f"{field}={value!r} contains mojibake — string table decoded with the wrong charset?"
+
+
 def assert_file_shape(f: dict):
     assert "name" in f and isinstance(f["name"], str) and f["name"]
     assert "id" in f and isinstance(f["id"], int) and f["id"] > 0
+    assert_no_mojibake(f["name"], "name")
     if f.get("url"):
         assert f["url"].startswith("https://"), f"Suspicious URL: {f['url']!r}"
 

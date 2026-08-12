@@ -25,68 +25,29 @@ class GWTParser:
         self.data = []
 
         if response_text.startswith('//OK['):
-            self._parse_response(response_text[5:-1])
+            self._parse_response(response_text[4:])
         elif response_text.startswith('//EX['):
             raise Exception(f"GWT Exception: {response_text}")
         else:
             raise Exception(f"Unknown GWT response format")
 
     def _parse_response(self, content: str):
-        """Parse the GWT-RPC response content."""
-        bracket_start = content.rfind('[')
-        bracket_end = content.rfind(']') + 1
+        """
+        Parse the GWT-RPC response content.
 
-        if bracket_start == -1:
+        The payload is a JSON array: [data..., ["string_table"], flags, version].
+        It is decoded with json.loads, which is what the JavaScript client does
+        (JSON.parse over the same payload). That way both \\uXXXX escapes and
+        literal UTF-8 are decoded exactly as the site decodes them.
+        """
+        parsed = json.loads(content)
+
+        # String table sits at index -3, followed by flags and version.
+        if len(parsed) < 3 or not isinstance(parsed[-3], list):
             raise Exception("Could not find string table")
 
-        string_table_str = content[bracket_start:bracket_end]
-        self._parse_string_table(string_table_str)
-
-        data_str = content[:bracket_start].rstrip(',')
-        self._parse_data(data_str)
-
-    def _parse_string_table(self, s: str):
-        """Parse the string table."""
-        self.string_table = []
-        current = ""
-        in_string = False
-        escape = False
-
-        for char in s[1:-1]:
-            if escape:
-                current += char
-                escape = False
-            elif char == '\\':
-                escape = True
-                current += char
-            elif char == '"':
-                if in_string:
-                    try:
-                        decoded = current.encode().decode('unicode_escape')
-                    except:
-                        decoded = current
-                    self.string_table.append(decoded)
-                    current = ""
-                    in_string = False
-                else:
-                    in_string = True
-            elif in_string:
-                current += char
-
-    def _parse_data(self, s: str):
-        """Parse the data array."""
-        self.data = []
-        for part in s.split(','):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                if '.' in part:
-                    self.data.append(float(part))
-                else:
-                    self.data.append(int(part))
-            except ValueError:
-                self.data.append(part)
+        self.string_table = parsed[-3]
+        self.data = parsed[:-3]
 
     def get_string(self, index: int) -> Optional[str]:
         """Get string from table by index."""
