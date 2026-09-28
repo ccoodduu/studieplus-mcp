@@ -4,6 +4,8 @@ MCP server der giver Claude Desktop (og andre MCP-klienter) adgang til skoledata
 
 Spørg Claude om dit skema, lektier, afleveringer og filer direkte i chatten.
 
+Al kommunikation med Studie+ ligger i [studieplus-api](https://github.com/ccoodduu/studieplus-api). Vil du have skemaet og afleveringerne i Google Kalender, så se [studieplus-calendar](https://github.com/ccoodduu/studieplus-calendar).
+
 ## Features
 
 - **Dagsoverblik** — skema, lektier, noter og afleveringer for en given dag
@@ -22,6 +24,12 @@ Spørg Claude om dit skema, lektier, afleveringer og filer direkte i chatten.
 ```bash
 cd studieplus-mcp
 pip install -r requirements.txt
+```
+
+Det installerer også nyeste `studieplus-api` fra GitHub. Opdatér den senere med:
+
+```bash
+pip install --force-reinstall --no-deps "studieplus-api @ git+https://github.com/ccoodduu/studieplus-api"
 ```
 
 ### 2. Konfigurer credentials
@@ -94,16 +102,10 @@ Når serveren er installeret, kan du spørge Claude:
 src/
   mcp_server/
     server.py              # MCP tools (thin wrapper)
-  studieplus_scraper/
-    requests_scraper.py    # HTTP-baseret GWT-RPC scraper
-    gwt_deserializer.py    # Stack-baseret GWT response parser
     api.py                 # API lag (business logic, caching)
-    scraper.py             # Playwright-baseret scraper (outdated, fallback)
 ```
 
-Scraperen kommunikerer direkte med Studie+ via GWT-RPC protokollen — ingen browser nødvendig.
-
-> **Note:** Der findes også en Playwright-baseret scraper (`scraper.py`) som kan bruges som fallback. Den er outdated og mangler nogle features, men kan aktiveres med `USE_PLAYWRIGHT_SCRAPER=true`. Kræver `pip install playwright && playwright install chromium`.
+Selve scraperen (GWT-RPC-klienten) er pakken `studieplus_api` fra [studieplus-api](https://github.com/ccoodduu/studieplus-api). Den taler direkte med Studie+, og der skal ingen browser til.
 
 ## Transport
 

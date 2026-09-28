@@ -1,36 +1,18 @@
 """
-API Layer for StudiePlus Scraper
+API layer between studieplus-api and the MCP server.
 
 This layer handles business logic, data transformation, and scraper lifecycle management.
-It provides a clean interface between the raw scraper and the MCP server.
-
-Uses lightweight HTTP-based scraper by default.
-Set USE_PLAYWRIGHT_SCRAPER=true to use Playwright browser automation instead.
 """
 
-import os
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from .scraper import StudiePlusScraper
-from .requests_scraper import StudiePlusRequestsScraper
-from .logger import logger
+
+from studieplus_api import StudiePlusRequestsScraper
+from studieplus_api.logger import logger
 
 
 def get_scraper():
-    """
-    Factory function to get the appropriate scraper based on environment.
-
-    By default uses lightweight HTTP scraper (~30MB RAM).
-    Set USE_PLAYWRIGHT_SCRAPER=true to use Playwright browser automation (~300-500MB RAM).
-    """
-    use_playwright = os.getenv('USE_PLAYWRIGHT_SCRAPER', '').lower() in ('true', '1', 'yes')
-
-    if use_playwright:
-        logger.info("Using Playwright browser scraper")
-        return StudiePlusScraper()
-    else:
-        logger.info("Using lightweight requests-based scraper")
-        return StudiePlusRequestsScraper()
+    return StudiePlusRequestsScraper()
 
 
 # ==================== CACHE ====================

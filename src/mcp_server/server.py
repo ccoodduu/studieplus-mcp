@@ -1,13 +1,15 @@
 import os
-import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from studieplus_scraper import api
+from dotenv import load_dotenv
 from fastmcp import FastMCP
+
+import api
+
+# Claude Desktop passes credentials as env vars; .env is for running the server directly
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # System instructions for LLMs using this MCP server
 SYSTEM_INSTRUCTIONS = """

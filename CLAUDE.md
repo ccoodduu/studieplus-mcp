@@ -3,132 +3,21 @@
 ## Projekt
 
 MCP server der giver Claude Desktop adgang til en dansk elevs skoledata fra Studie+.
-Bruger GWT-RPC API direkte (ingen browser) via `requests`-biblioteket.
 
-### Krav til GWT-parsing
-- **INGEN magic numbers** eller hacky løsninger
-- **Parse data på SAMME måde som JavaScript-koden gør** (stack-baseret)
-- Hvis der er udfordringer: **meld tilbage i stedet for at ændre plan**
-- **ALTID** følg JS-kodens læserækkefølge
+Al kommunikation med Studie+ (GWT-RPC, deserializers, login) ligger i
+[studieplus-api](https://github.com/ccoodduu/studieplus-api), pakken `studieplus_api`.
+**GWT-rettelser laves der, ikke her** — se dens `CLAUDE.md` for formatet og hvordan man
+reverse engineerer nye typer. Lokalt ligger den i `../studieplus-api`.
 
----
+`requirements.txt` følger bevidst nyeste `master` af studieplus-api. Lokalt er den
+installeret editable i `.venv` (`uv pip install -e ../studieplus-api`), så ændringer i
+api'en slår igennem med det samme.
 
-## GWT-RPC Format
-
-### Response struktur
-```
-//OK[data..., ["string_table"], flags, version]
-```
-
-- `//OK` eller `//EX` prefix (success/exception)
-- `data` - flat array, læses bagfra (stack)
-- `string_table` - 1-baseret indeksering (0 = null)
-
-### Læsefunktioner
-- `a.b[--a.a]` — pop int fra stack
-- `pqd(a, val)` — string lookup: `val > 0 ? strings[val-1] : null` (SINGLE pop, babel-inlined version ser ud som 2 pops men er 1)
-- `!!a.b[--a.a]` — boolean
-- `iqd(a)` — objekt: pop, negativ=back-reference, positiv=klasse fra string table, 0=null
-
----
-
-## Vigtige Deserializers
-
-### Note (Lzg — source_babel_inlined.js:26658)
-Top-level response fra `hentNoteForSkema(lessonId)`.
-```javascript
-function Lzg(a, b) {
-  b.a = zUb(iqd(a), 24);    // Integer (SkemaObjekt ID)
-  b.b = zUb(iqd(a), 169);   // Medarbejder (lærer)
-  b.c = zUb(iqd(a), 211);   // SkemaNote2
-}
-```
-
-### SkemaNote2 (hAg — source_babel_inlined.js:53626)
-16 felter. **VIGTIGT:** `b.c` er IKKE fil-container. `b.n` er fil-container.
-```
-b.a  = int              — note ID
-b.b  = string           — klasse-navn (f.eks. "htxqr24")
-b.c  = int              — schedule container_id (IKKE til filer!)
-b.d  = boolean          — has_files
-b.e  = string           — lektier tekst
-b.f  = string           — lektier HTML
-b.g  = string           — note tekst
-b.i  = string           — note HTML
-b.j  = object (Integer) — schedule container (samme som b.c)
-b.k  = string
-b.n  = object (Integer) — FILE container_id (BRUG DENNE til filer!)
-b.o  = object (UDate)
-b.p  = object (Integer)
-b.q  = int
-b.r  = int
-b.s  = string
-```
-
-### SkemaBegivenhed (Dqg — source_babel_inlined.js:62180)
-Vigtige felter:
-- `b.P` = skoleFag (subject/fag)
-- `b.Q` = slut (UDate)
-- `b.R` = start (UDate)
-- `b.A` = lokaleList (ArrayList af LokalerISkema)
-- `b.C` = medarbejderList (ArrayList af MedarbejderISkema)
-
-### ArrayList, UDate, LokalerISkema, MedarbejderISkema
-Se `gwt_deserializer.py` for implementering — følger JS præcist.
-
----
-
-## Fil-download Flow (3 trin)
-
-Bekræftet via Playwright network capture. Websiden bruger dette flow:
-
-1. **`skemanoteservice.hentNoteForSkema(lessonId)`** → Note objekt med SkemaNote2
-2. **`ressourceservice.findRessourcerPerContainer(file_container_id, SKEMANOTE=12)`** → filliste
-3. **`ressourceservice.hentRessourceUrl(fileId, "")`** → signeret S3 URL
-
-`file_container_id` kommer fra SkemaNote2 felt `b.n` (IKKE `b.c`).
-`hentRessourceUrl` tager fil-ID og en TOM string som 2. parameter.
-
-### Signerede URLs
-Format: `https://cellar-c2.services.clever-cloud.com/prod-{instnr}/{uuid}?X-Amz-...`
-Gyldige i ~5 minutter.
-
----
-
-## Tests
-
-Live contract-tests der logger ind og kalder det rigtige Studie+ API. De asserter
-på *form* (typer, ranges, fornuftige værdier) — ikke specifikke værdier — for at
-fange når Studie+ ændrer deres GWT-struktur.
-
-### Kør tests
-```bash
-python -m pytest
-```
-Konfiguration ligger i `pytest.ini` (`testpaths = tests`, `asyncio_mode = auto`).
-
-### Krav
-- Credentials i `.env` i projektroden: `STUDIEPLUS_USERNAME`, `STUDIEPLUS_PASSWORD`,
-  `STUDIEPLUS_SCHOOL`. Mangler de, **skippes** testene (fejler ikke).
-- `requirements-dev.txt` skal være installeret (`pytest`, `pytest-asyncio`, `python-dotenv`).
-
-### Filer
-- `tests/conftest.py` — `scraper`-fixture (login) + shape-helpers
-  (`assert_lesson_shape`, `assert_assignment_shape`, `assert_file_shape`,
-  `looks_like_gwt_leak`).
-- `tests/test_live.py` — selve testene.
-
-**Bemærk:** Æ/ø/å vises som `�` i PowerShell-output pga. terminal-encoding —
-selve dataen er korrekt.
-
----
+Skema/afleveringer i Google Kalender er et separat projekt:
+[studieplus-calendar](https://github.com/ccoodduu/studieplus-calendar) (`../studieplus-calendar`).
 
 ## Vigtige Filer
 
-- `gwt_analysis/source_babel_inlined.js` — JS med inlinede funktioner (brug til analyse)
-- `gwt_analysis/source_clean.js` — Original JS kode
-- `src/studieplus_scraper/gwt_deserializer.py` — Stack-baseret GWT parser
-- `src/studieplus_scraper/requests_scraper.py` — HTTP-baseret scraper (GWT-RPC kald)
-- `src/studieplus_scraper/api.py` — API lag mellem scraper og MCP
-- `src/mcp_server/server.py` — MCP server tools
-- `GWT_REVERSE_ENGINEERING.md` — Guide til at reverse engineere nye GWT typer
+- `src/mcp_server/server.py` — MCP server tools. Claude Desktop starter den med
+  `.venv\Scripts\python.exe src\mcp_server\server.py` — behold den sti.
+- `src/mcp_server/api.py` — API lag mellem studieplus-api og MCP (dags/ugeoverblik, cache)

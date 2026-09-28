@@ -1,9 +1,5 @@
-# Core dependencies (lightweight requests-based scraper)
-requests>=2.32.0
-python-dotenv>=1.0.0
 fastmcp>=2.0.0
-
-# Playwright scraper dependencies (uncomment if using browser-based scraper)
-# beautifulsoup4>=4.12.0  # (playwright scraper - HTML parsing)
-# playwright>=1.49.0      # (playwright scraper - browser automation)
-
+python-dotenv>=1.0.0
+# Follows the newest studieplus-api on purpose. Update with:
+#   pip install --force-reinstall --no-deps "studieplus-api @ git+https://github.com/ccoodduu/studieplus-api"
+studieplus-api @ git+https://github.com/ccoodduu/studieplus-api
