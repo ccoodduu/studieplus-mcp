@@ -5,8 +5,10 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 
 import api
+from file_content import readable_file
 
 # Claude Desktop passes credentials as env vars; .env is for running the server directly
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
@@ -242,7 +244,7 @@ async def get_assignment_details(assignment_id: str) -> dict:
         - subject: Fag
         - description: Beskrivelse (HTML)
         - deadline: Afleveringsfrist
-        - files: Liste af filer med navn og URL
+        - files: Liste med name, source (teacher/student) og url (signeret, gyldig ~5 min)
         - submission_status: Afleveret/Ikke afleveret
     """
     result = await api.get_assignment_detail(assignment_id=assignment_id)
@@ -282,12 +284,13 @@ async def get_lesson_files(lesson_id: int) -> dict:
 @mcp.tool()
 async def download_lesson_file(file_url: str, file_name: str, output_dir: str = None) -> dict:
     """
-    Download en fil fra en lektion til brugerens computer.
+    Download en fil fra en lektion eller aflevering til brugerens computer.
 
-    Filen gemmes som default i brugerens Downloads-mappe.
+    Filen gemmes som default i brugerens Downloads-mappe. Virker for filer i alle størrelser.
 
     Args:
-        file_url: URL til filen (fra get_lesson_files)
+        file_url: URL til filen (fra get_lesson_files eller get_assignment_details).
+            URL'en udløber efter ~5 min; hent den igen, hvis download fejler.
         file_name: Filens navn
         output_dir: Absolut sti til mappe (default: brugerens Downloads-mappe)
 
@@ -309,19 +312,23 @@ async def download_lesson_file(file_url: str, file_name: str, output_dir: str = 
 
 
 @mcp.tool()
-async def load_lesson_file(file_url: str, file_name: str) -> dict:
+async def load_lesson_file(file_url: str, file_name: str) -> ToolResult:
     """
-    Indlæs en fil og returner indholdet så du kan læse det.
+    Indlæs en fil fra en lektion eller aflevering, så du kan læse indholdet.
+
+    Kan læse tekstfiler, PDF og Word (.docx) som tekst og billeder som billeder.
+    Andre filtyper (fx .zip) og filer over 20 MB afvises; brug download_lesson_file til dem.
 
     Args:
-        file_url: URL til filen (fra get_lesson_files)
-        file_name: Filens navn
+        file_url: URL til filen (fra get_lesson_files eller get_assignment_details).
+            URL'en udløber efter ~5 min; hent den igen, hvis indlæsning fejler.
+        file_name: Filens navn (bruges til at bestemme filtypen)
 
     Returns:
         - success: Om indlæsning lykkedes
-        - content: Filindhold (tekst eller base64)
-        - content_type: MIME type
-        - is_text: Om filen er tekst-baseret
+        - content: Filens tekst (for billeder vedhæftes billedet i stedet)
+        - truncated: Sat, hvis teksten er afkortet til 100.000 tegn
+        - error: Hvorfor filen ikke kunne læses
     """
     result = await api.load_file(
         file_url=file_url,
@@ -331,7 +338,7 @@ async def load_lesson_file(file_url: str, file_name: str) -> dict:
     # Add current time context
     result['current_time'] = format_datetime_for_claude()
 
-    return result
+    return readable_file(result)
 
 
 if __name__ == "__main__":
