@@ -11,8 +11,15 @@ from studieplus_api import StudiePlusRequestsScraper
 from studieplus_api.logger import logger
 
 
+_scraper: Optional[StudiePlusRequestsScraper] = None
+
+
 def get_scraper():
-    return StudiePlusRequestsScraper()
+    """One shared scraper so the login is reused; studieplus-api logs in again when it expires."""
+    global _scraper
+    if _scraper is None:
+        _scraper = StudiePlusRequestsScraper()
+    return _scraper
 
 
 # ==================== CACHE ====================
