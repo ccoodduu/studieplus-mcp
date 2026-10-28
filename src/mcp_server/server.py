@@ -1,17 +1,28 @@
 import os
+import runpy
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
+
+import updater
+
+# Claude Desktop passes credentials as env vars; .env is for running the server directly
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
+# Update before fastmcp, api and studieplus_api are imported, so this start runs the new code.
+# If server.py itself changed, run the new file instead of the rest of this one.
+if __name__ == "__main__" and updater.update():
+    runpy.run_path(__file__, run_name="__main__")
+    sys.exit()
+
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
 
 import api
 from file_content import readable_file
-
-# Claude Desktop passes credentials as env vars; .env is for running the server directly
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # System instructions for LLMs using this MCP server
 SYSTEM_INSTRUCTIONS = """

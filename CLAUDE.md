@@ -21,3 +21,5 @@ Skema/afleveringer i Google Kalender er et separat projekt:
 - `src/mcp_server/server.py` — MCP server tools. Claude Desktop starter den med
   `.venv\Scripts\python.exe src\mcp_server\server.py` — behold den sti.
 - `src/mcp_server/api.py` — API lag mellem studieplus-api og MCP (dags/ugeoverblik, cache)
+- `src/mcp_server/updater.py` — henter nyeste studieplus-mcp og studieplus-api ved opstart,
+  før `fastmcp`, `api` og `studieplus_api` importeres. Slå fra med `STUDIEPLUS_AUTO_UPDATE=0`.

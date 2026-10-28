@@ -26,11 +26,9 @@ cd studieplus-mcp
 pip install -r requirements.txt
 ```
 
-Det installerer også nyeste `studieplus-api` fra GitHub. Opdatér den senere med:
+Det installerer også nyeste `studieplus-api` fra GitHub.
 
-```bash
-pip install --force-reinstall --no-deps "studieplus-api @ git+https://github.com/ccoodduu/studieplus-api"
-```
+Serveren opdaterer sig selv, hver gang Claude Desktop starter den. Den henter nyeste `studieplus-mcp` med `git pull` og nyeste `studieplus-api` fra GitHub. Det kræver, at projektet er klonet med git, og at `git` findes på PATH. Hvis du er offline eller har lokale ændringer, starter serveren uden at opdatere. Sæt `STUDIEPLUS_AUTO_UPDATE=0` for at slå det fra.
 
 ### 2. Konfigurer credentials
 
